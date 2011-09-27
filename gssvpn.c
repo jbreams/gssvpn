@@ -2,6 +2,7 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <netdb.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -18,20 +19,23 @@
 #include <syslog.h>
 
 #define SERVICE_NAME "gssvpn"
-#define HOST_NAME "localhost"
 
 static int verbose=1;
 
-int connectto(char * host) {
+int connectto(char * host, int port, char * service) {
 	struct sockaddr_in saddr;
 	struct hostent * hp;
-	struct servent * sv = getservbyname(SERVICE_NAME, "tcp");
+	struct servent * sv;
 	int s;
 
-	if(sv == NULL) {
-		fprintf(stderr, "Error looking up service name for %s: %s\n",
-						SERVICE_NAME, strerror(errno));
-		return -1;
+	if(service && !port) {
+		sv = getservbyname(service, "tcp");
+
+		if(sv == NULL) {
+			fprintf(stderr, "Error looking up service name for %s: %s\n",
+					SERVICE_NAME, strerror(errno));
+			return -1;
+		}
 	}
 
 	hp = gethostbyname(host);
@@ -41,8 +45,11 @@ int connectto(char * host) {
 	}
 
 	saddr.sin_family = hp->h_addrtype;
-    memcpy(&saddr.sin_addr, hp->h_addr, sizeof(saddr.sin_addr));
-    saddr.sin_port = sv->s_port;
+	memcpy(&saddr.sin_addr, hp->h_addr, sizeof(saddr.sin_addr));
+	if(port)
+		saddr.sin_port = htons(port);
+	else if(sv);
+		saddr.sin_port = sv->s_port;
 
 	s = socket(AF_INET, SOCK_STREAM, 0);
 	if(s < 0) {
@@ -61,13 +68,10 @@ int connectto(char * host) {
 int readremote(gss_buffer_desc * buffer, int socket) {
 	buffer->length = 0;
 	size_t r = read(socket, (void*)&buffer->length, sizeof(OM_uint32));
-	if(r < sizeof(OM_uint32))
+	if(r < sizeof(OM_uint32) || buffer->length == 0)
 		return errno;
 
 	buffer->length = ntohl(buffer->length);
-	if(verbose)
-		fprintf(stderr, "Going to read %d bytes from remote host\n",
-						buffer->length);
 	buffer->value = malloc(buffer->length + 1);
 	r = read(socket, buffer->value, buffer->length);
 	if(r < buffer->length)
@@ -79,7 +83,6 @@ int readremote(gss_buffer_desc * buffer, int socket) {
 
 int writeremote(gss_buffer_desc * buffer, int socket) {
 	OM_uint32 length = htonl(buffer->length), min;
-	fprintf(stderr, "Going to write %d bytes to remote host\n", length);
 	size_t s = write(socket, (void*)&length, sizeof(OM_uint32));
 	if(s < sizeof(OM_uint32))
 		return errno;
@@ -98,16 +101,35 @@ int main(int argc, char ** argv) {
 	gss_buffer_desc sendbuf, recvbuf = GSS_C_EMPTY_BUFFER;
 	gss_name_t target_name;
 	gss_OID_set_desc mechs;
-	struct pollfd pfds[2];
 	struct ifreq ifr;
+	int ch, sfd, tapfd, rc, port = 0;
+	char * hostname = NULL, * service = strdup(SERVICE_NAME);
 
+	while((ch = getopt(argc, argv, "vh:p:s:")) != -1) {
+		switch(ch) {
+			case 'v':
+				verbose=1;
+				break;
+			case 'h':
+				hostname = strdup(optarg);
+				break;
+			case 'p':
+				port = atoi(optarg);
+				break;
+			case 's':
+				service = strdup(optarg);
+				break;
+		}
+	}
+	
+	if(hostname == NULL) {
+		fprintf(stderr, "Must supply hostname to connect to.\n");
+		return -EINVAL;
+	}
 	memset(&mechs, 0, sizeof(mechs));
-	char * prodid = malloc(sizeof(SERVICE_NAME) + sizeof(HOST_NAME) + 2);
+	char * prodid = malloc(strlen(service) + strlen(hostname) + 2);
 
-	sprintf(prodid, "%s@%s", SERVICE_NAME, HOST_NAME);
-
-	int sfd, tapfd, rc;
-
+	sprintf(prodid, "%s@%s", service, hostname);
 	sendbuf.value = prodid;
 	sendbuf.length = strlen(prodid);
 
@@ -115,7 +137,9 @@ int main(int argc, char ** argv) {
 		(gss_OID) GSS_C_NT_HOSTBASED_SERVICE, &target_name);
 	free(prodid);
 
-	sfd = connectto(HOST_NAME);
+	sfd = connectto(hostname, port, service);
+	free(hostname);
+	free(service);
 
 	do {
 		OM_uint32 lmin;
@@ -160,13 +184,18 @@ int main(int argc, char ** argv) {
 	ioctl(ts, SIOCSIFFLAGS, &ifr);
 	close(ts);
 
-	pfds[0].fd = sfd;
-	pfds[0].events = POLLIN;
-	pfds[1].fd = tapfd;
-	pfds[1].events = POLLIN;
+	while(1) {
+		fd_set rdset;
 
-	while(poll(pfds, 2, -1)) {
-		if(pfds[0].revents == POLLIN) {
+		FD_ZERO(&rdset);
+		FD_SET(tapfd, &rdset);
+		FD_SET(sfd, &rdset);
+		rc = select(tapfd + 1, &rdset, NULL, NULL, NULL);
+		if(rc < 0)
+			break;
+
+		if(FD_ISSET(sfd, &rdset)) {
+			fprintf(stderr, "Received a packet from remote network.");
 			rc = readremote(&recvbuf, sfd);
 			gss_buffer_desc plaintext;
 			if(rc != 0) {
@@ -187,12 +216,14 @@ int main(int argc, char ** argv) {
 				break;
 			}
 
+			fprintf(stderr, "Writing %d bytes to local network", plaintext.length);
 			write(tapfd, plaintext.value, plaintext.length);
 			memset(plaintext.value, 0, plaintext.length);
 			gss_release_buffer(&min, &plaintext);
 			gss_release_buffer(&min, &recvbuf);
 		}
-		if(pfds[1].revents == POLLIN) {
+		if(FD_ISSET(tapfd, &rdset)) {
+			fprintf(stderr, "Received a packet from local network.");
 			gss_buffer_desc plaintext;
 			plaintext.value = malloc(1500);
 			plaintext.length = read(tapfd, plaintext.value, 1500);
