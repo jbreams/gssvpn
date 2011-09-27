@@ -47,9 +47,11 @@ int get_server_creds(gss_cred_id_t * sco) {
 }
 
 int readremote(gss_buffer_desc * buffer) {
+	buffer->length = 0;
 	size_t r = read(STDIN, (void*)&buffer->length, sizeof(OM_uint32));
 	if(r < sizeof(OM_uint32))
 		return errno;
+	syslog(LOG_DEBUG, "Going to read %d (%d) bytes from remote host", buffer->length, r);
 
 	buffer->length = ntohl(buffer->length);
 	if(verbose)
@@ -86,16 +88,18 @@ int main(int argc, char ** argv) {
 	gss_buffer_desc remotein, remoteout;
 	gss_name_t client;
 	gss_OID doid;
-	gss_ctx_id_t context;
+	gss_ctx_id_t context = GSS_C_NO_CONTEXT;
 #if defined(HAVE_IF_TUN)
 	struct ifreq ifr;
 #endif
 	struct pollfd pfds[2];
 
+	openlog("gssvpnd", 0, LOG_DAEMON);
+
 	remotein.length = 0;
 	remoteout.length = 0;
-	for(int i; i < argc; i++) {
-		if(strcmp(argv[i], "--verbose") == 0)
+	for(rc = 0; rc < argc; rc++) {
+		if(strcmp(argv[rc], "--verbose") == 0)
 			verbose = 1;
 	}
 
@@ -118,6 +122,8 @@ int main(int argc, char ** argv) {
 						&remotein, GSS_C_NO_CHANNEL_BINDINGS, &client,
 						&doid, &remoteout, &ret_flags, NULL, NULL);
 		gss_release_buffer(&lmin, &remotein);
+		if(verbose)
+			syslog(LOG_DEBUG, "Accepted security context %d %d", maj, min);
 		if(remoteout.length > 0) {
 			OM_uint32 lmin;
 			rc = writeremote(&remoteout);
@@ -157,7 +163,7 @@ int main(int argc, char ** argv) {
 		gss_release_cred(&min, &server_creds);
 		return -1;
 	} else if(verbose)
-		syslog(LOG_DEBUG, "Set up tun/tap device %s", ifr.ifrn_name);
+		syslog(LOG_DEBUG, "Set up tun/tap device %s", ifr.ifr_ifrn.ifrn_name);
 #elif defined(DARWIN)
 	tapfd = open("/dev/net/tap0", O_RDWR);
 	if(tapfd < 0) {
@@ -178,17 +184,16 @@ int main(int argc, char ** argv) {
 	if(verbose)
 		syslog(LOG_DEBUG, "Starting listener loop.");
 	while(poll(pfds, 2, -1)) {
-		if(pfds[0].revents == POLLERR || pfds[0].revents == POLLHUP ||
-			pfds[0].revents == POLLNVAL || pfds[1].revents == POLLERR ||
-			pfds[1].revents == POLLHUP || pfds[1].revents == POLLNVAL)
-				break;
-
 		if(pfds[0].revents == POLLIN) {
 			rc = readremote(&remotein);
 			gss_buffer_desc plaintext;
 			if(rc != 0) {
 				syslog(LOG_ERR, "Error reading from remote host: %s",
 								strerror(rc));
+				break;
+			}
+			if(remotein.length == 0) {
+				syslog(LOG_ERR, "Remote host has closed the connection.");
 				break;
 			}
 			maj = gss_unwrap(&min, context, &remotein, &plaintext,
