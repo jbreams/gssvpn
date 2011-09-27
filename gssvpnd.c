@@ -170,6 +170,12 @@ int main(int argc, char ** argv) {
 		return -1;
 	}
 
+	int ts = socket(PF_UNIX, SOCK_STREAM, 0);
+	ioctl(ts, SIOCGIFFLAGS, &ifr);
+	ifr.ifr_flags |= IFF_UP;
+	ioctl(ts, SIOCSIFFLAGS, &ifs);
+	close(ts);
+
 	pfds[0].fd = 0;
 	pfds[0].events = POLLIN;
 	pfds[1].fd = tapfd;
