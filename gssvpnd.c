@@ -135,7 +135,6 @@ int main(int argc, char ** argv) {
 		}
 	} while(maj == GSS_S_CONTINUE_NEEDED);
 
-#ifdef HAVE_TUN_IF
 	tapfd = open("/dev/net/tun", O_RDWR);
 
 	if(tapfd < 0) {
