@@ -22,10 +22,33 @@
 
 static int verbose=1;
 
+void gss_disp_loop(OM_uint32 status, OM_uint32 type) {
+	gss_buffer_desc status_string = { 0, 0 };
+	OM_uint32 context = 0, lmin, lmaj;
+
+	do {
+		lmaj = gss_display_status(&lmin, status, type, GSS_C_NO_OID,
+						&context, &status_string);
+		if(lmaj != GSS_S_COMPLETE)
+			return;
+
+		if(status_string.value) {
+			fprintf(stderr, "GSSAPI error %d: %.*s\n", status,
+							status_string.length, status_string.value);
+			gss_release_buffer(&lmin, &status_string);
+		}
+	} while(context != 0);
+}
+
+void display_gss_err(OM_uint32 major, OM_uint32 minor) {
+	gss_disp_loop(major, GSS_C_GSS_CODE);
+	gss_disp_loop(minor, GSS_C_MECH_CODE);
+}
+
 int connectto(char * host, int port, char * service) {
-	struct sockaddr_in saddr;
 	struct hostent * hp;
 	struct servent * sv;
+	struct sockaddr_in remote_saddr;
 	int s;
 
 	if(service && !port) {
@@ -44,21 +67,21 @@ int connectto(char * host, int port, char * service) {
 		return -1;
 	}
 
-	saddr.sin_family = hp->h_addrtype;
-	memcpy(&saddr.sin_addr, hp->h_addr, sizeof(saddr.sin_addr));
+	remote_saddr.sin_family = hp->h_addrtype;
+	memcpy(&remote_saddr.sin_addr, hp->h_addr, sizeof(remote_saddr.sin_addr));
 	if(port)
-		saddr.sin_port = htons(port);
-	else if(sv);
-		saddr.sin_port = sv->s_port;
+		remote_saddr.sin_port = htons(port);
+	else if(sv)
+		remote_saddr.sin_port = sv->s_port;
 
 	s = socket(AF_INET, SOCK_STREAM, 0);
 	if(s < 0) {
 		fprintf(stderr, "Error creating socket: %s\n", strerror(errno));
 		return -1;
 	}
-	if(connect(s, (struct sockaddr*)&saddr, sizeof(saddr)) < 0) {
-		fprintf(stderr, "Error connecting to %s:%d: %s\n",
-						host, sv->s_port, strerror(errno));
+	if(connect(s, (struct sockaddr*)&remote_saddr, sizeof(remote_saddr)) < 0) {
+		fprintf(stderr, "Error connecting to %s:%d: %s\n", host, 
+			sv->s_port, strerror(errno));
 		close(s);
 		return -1;
 	}
@@ -67,13 +90,14 @@ int connectto(char * host, int port, char * service) {
 
 int readremote(gss_buffer_desc * buffer, int socket) {
 	buffer->length = 0;
-	size_t r = read(socket, (void*)&buffer->length, sizeof(OM_uint32));
+	size_t r = recv(socket, (void*)&buffer->length, sizeof(OM_uint32), 0);
 	if(r < sizeof(OM_uint32) || buffer->length == 0)
 		return errno;
 
 	buffer->length = ntohl(buffer->length);
 	buffer->value = malloc(buffer->length + 1);
-	r = read(socket, buffer->value, buffer->length);
+	r = recv(socket, buffer->value, buffer->length, 0);
+
 	if(r < buffer->length)
 		return errno;
 	else if(verbose)
@@ -83,11 +107,11 @@ int readremote(gss_buffer_desc * buffer, int socket) {
 
 int writeremote(gss_buffer_desc * buffer, int socket) {
 	OM_uint32 length = htonl(buffer->length), min;
-	size_t s = write(socket, (void*)&length, sizeof(OM_uint32));
+	size_t s = send(socket, (void*)&length, sizeof(OM_uint32), 0);
 	if(s < sizeof(OM_uint32))
 		return errno;
-
-	s = write(socket, buffer->value, buffer->length);
+	
+	s = send(socket, buffer->value, buffer->length, 0);
 	gss_release_buffer(&min, buffer);
 	if(s < buffer->length)
 		return errno;
@@ -140,6 +164,8 @@ int main(int argc, char ** argv) {
 	sfd = connectto(hostname, port, service);
 	free(hostname);
 	free(service);
+	if(sfd < 0)
+		return -1;
 
 	do {
 		OM_uint32 lmin;
@@ -150,8 +176,7 @@ int main(int argc, char ** argv) {
 		if(maj != GSS_S_COMPLETE && maj != GSS_S_CONTINUE_NEEDED) {
 			if(context != GSS_C_NO_CONTEXT)
 				gss_delete_sec_context(&lmin, &context, GSS_C_NO_BUFFER);
-			fprintf(stderr, "Error initializing security context %d:%d\n",
-				maj, min);
+			display_gss_err(maj, min);
 			return -1;
 		}
 
@@ -195,7 +220,6 @@ int main(int argc, char ** argv) {
 			break;
 
 		if(FD_ISSET(sfd, &rdset)) {
-			fprintf(stderr, "Received a packet from remote network.");
 			rc = readremote(&recvbuf, sfd);
 			gss_buffer_desc plaintext;
 			if(rc != 0) {
@@ -211,22 +235,26 @@ int main(int argc, char ** argv) {
 
 			maj = gss_unwrap(&min, context, &recvbuf, &plaintext, NULL, NULL);
 			if(maj != GSS_S_COMPLETE) {
-				fprintf(stderr, "Error unwrapping packet from remote host: %d:%d",
-								maj, min);
+				display_gss_err(maj, min);
 				break;
 			}
 
-			fprintf(stderr, "Writing %d bytes to local network", plaintext.length);
+			if(verbose)
+				fprintf(stderr, "Writing %d bytes to local network\n",
+								plaintext.length);
 			write(tapfd, plaintext.value, plaintext.length);
 			memset(plaintext.value, 0, plaintext.length);
 			gss_release_buffer(&min, &plaintext);
 			gss_release_buffer(&min, &recvbuf);
 		}
 		if(FD_ISSET(tapfd, &rdset)) {
-			fprintf(stderr, "Received a packet from local network.");
 			gss_buffer_desc plaintext;
 			plaintext.value = malloc(1500);
 			plaintext.length = read(tapfd, plaintext.value, 1500);
+
+			if(verbose)
+				fprintf(stderr, "Received %d bytes from local network\n",
+								plaintext.length);
 
 			if(plaintext.length < 0) {
 				fprintf(stderr, "Error receiving packet from ethernet bridge: %s",
@@ -236,6 +264,10 @@ int main(int argc, char ** argv) {
 
 			maj = gss_wrap(&min, context, 1, GSS_C_QOP_DEFAULT, &plaintext,
 							NULL, &sendbuf);
+			if(maj != GSS_S_COMPLETE) {
+				display_gss_err(maj, min);
+				break;
+			}
 			rc = writeremote(&sendbuf, sfd);
 			memset(plaintext.value, 0, 1500);
 			free(plaintext.value);
