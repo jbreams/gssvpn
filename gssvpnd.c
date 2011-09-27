@@ -89,9 +89,7 @@ int main(int argc, char ** argv) {
 	gss_name_t client;
 	gss_OID doid;
 	gss_ctx_id_t context = GSS_C_NO_CONTEXT;
-#if defined(HAVE_IF_TUN)
 	struct ifreq ifr;
-#endif
 	struct pollfd pfds[2];
 
 	openlog("gssvpnd", 0, LOG_DAEMON);
@@ -132,15 +130,18 @@ int main(int argc, char ** argv) {
 
 		if(maj != GSS_S_COMPLETE && maj != GSS_S_CONTINUE_NEEDED) {
 			if(context != GSS_C_NO_CONTEXT)
-					gss_delete_sec_context(&lmin, &context, GSS_C_NO_BUFFER);
+				gss_delete_sec_context(&lmin, &context, GSS_C_NO_BUFFER);
 			syslog(LOG_ERR, "Error initializing security context %d:%d",
 							maj, min);
 			return -1;
 		}
 	} while(maj == GSS_S_CONTINUE_NEEDED);
 
-#if defined(HAVE_IF_TUN)
+#ifdef HAVE_TUN_IF
 	tapfd = open("/dev/net/tun", O_RDWR);
+#elif defined(DARWIN)
+	tapfd = open("/dev/net/tap0", O_RDWR);
+#endif
 	if(tapfd < 0) {
 		tapfd = errno;
 		syslog(LOG_ERR, "Error opening TAP device: %s",
@@ -152,7 +153,7 @@ int main(int argc, char ** argv) {
 		syslog(LOG_DEBUG, "Opened tun/tap device to fd %d", tapfd);
 
 	memset(&ifr, 0, sizeof(ifr));
-	ifr.ifr_flags = IFF_TAP;
+	ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
 	rc = ioctl(tapfd, TUNSETIFF, (void*)&ifr);
 	if(rc < 0) {
 		rc = errno;
@@ -164,8 +165,7 @@ int main(int argc, char ** argv) {
 		return -1;
 	} else if(verbose)
 		syslog(LOG_DEBUG, "Set up tun/tap device %s", ifr.ifr_ifrn.ifrn_name);
-#elif defined(DARWIN)
-	tapfd = open("/dev/net/tap0", O_RDWR);
+	
 	if(tapfd < 0) {
 		rc = errno;
 		syslog(LOG_ERR, "Error setting up TAP device: %s",
@@ -174,7 +174,6 @@ int main(int argc, char ** argv) {
 		gss_release_cred(&min, &server_creds);
 		return -1;
 	}
-#endif
 
 	pfds[0].fd = 0;
 	pfds[0].events = POLLIN;
@@ -209,7 +208,7 @@ int main(int argc, char ** argv) {
 			gss_release_buffer(&min, &plaintext);
 			gss_release_buffer(&min, &remotein);
 		}
-		else if(pfds[1].revents == POLLIN) {
+		if(pfds[1].revents == POLLIN) {
 			gss_buffer_desc plaintext;
 			plaintext.value = malloc(1500);
 
