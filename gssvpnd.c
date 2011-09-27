@@ -6,10 +6,8 @@
 #include <poll.h>
 #include <gssapi/gssapi.h>
 #include <unistd.h>
-#if defined(HAVE_IF_TUN)
 #include <net/if.h>
 #include <linux/if_tun.h>
-#endif
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -139,9 +137,7 @@ int main(int argc, char ** argv) {
 
 #ifdef HAVE_TUN_IF
 	tapfd = open("/dev/net/tun", O_RDWR);
-#elif defined(DARWIN)
-	tapfd = open("/dev/net/tap0", O_RDWR);
-#endif
+
 	if(tapfd < 0) {
 		tapfd = errno;
 		syslog(LOG_ERR, "Error opening TAP device: %s",
@@ -153,7 +149,7 @@ int main(int argc, char ** argv) {
 		syslog(LOG_DEBUG, "Opened tun/tap device to fd %d", tapfd);
 
 	memset(&ifr, 0, sizeof(ifr));
-	ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+	ifr.ifr_flags = IFF_TAP | IFF_NO_PI | IFF_UP;
 	rc = ioctl(tapfd, TUNSETIFF, (void*)&ifr);
 	if(rc < 0) {
 		rc = errno;
