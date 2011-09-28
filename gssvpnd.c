@@ -19,6 +19,29 @@
 
 static int verbose = 0;
 
+void gss_disp_loop(OM_uint32 status, OM_uint32 type) {
+	gss_buffer_desc status_string = { 0, 0 };
+	OM_uint32 context = 0, lmin, lmaj;
+
+	do {
+		lmaj = gss_display_status(&lmin, status, type, GSS_C_NO_OID,
+						&context, &status_string);
+		if(lmaj != GSS_S_COMPLETE)
+			return;
+
+		if(status_string.value) {
+			syslog(LOG_ERR, "GSSAPI error %d: %.*s", status,
+							status_string.length, status_string.value);
+			gss_release_buffer(&lmin, &status_string);
+		}
+	} while(context != 0);
+}
+
+void display_gss_err(OM_uint32 major, OM_uint32 minor) {
+	gss_disp_loop(major, GSS_C_GSS_CODE);
+	gss_disp_loop(minor, GSS_C_MECH_CODE);
+}
+
 int get_server_creds(gss_cred_id_t * sco) {
 	gss_buffer_desc name_buff;
 	gss_name_t server_name;
@@ -36,8 +59,7 @@ int get_server_creds(gss_cred_id_t * sco) {
 
 	gss_release_name(&min_stat, &server_name);
 	if(maj_stat != GSS_S_COMPLETE) {
-		syslog(LOG_ERR, "Error acquiring server credentials %d:%d",
-						maj_stat, min_stat);
+		display_gss_err(maj_stat, min_stat);
 		return -1;
 	} else if(verbose)
 		syslog(LOG_DEBUG, "Acquired credentials for SERVICE_NAME");
@@ -49,12 +71,8 @@ int readremote(gss_buffer_desc * buffer) {
 	size_t r = read(STDIN, (void*)&buffer->length, sizeof(OM_uint32));
 	if(r < sizeof(OM_uint32))
 		return errno;
-	syslog(LOG_DEBUG, "Going to read %d (%d) bytes from remote host", buffer->length, r);
 
 	buffer->length = ntohl(buffer->length);
-	if(verbose)
-		syslog(LOG_DEBUG, "Going to read %d bytes from remote host",
-						buffer->length);
 	buffer->value = malloc(buffer->length + 1);
 	r = read(STDIN, buffer->value, buffer->length);
 	if(r < buffer->length)
@@ -66,7 +84,6 @@ int readremote(gss_buffer_desc * buffer) {
 
 int writeremote(gss_buffer_desc * buffer) {
 	OM_uint32 length = htonl(buffer->length), min;
-	syslog(LOG_DEBUG, "Going to write %d bytes to remote host", length);
 	size_t s = write(STDOUT, (void*)&length, sizeof(OM_uint32));
 	if(s < sizeof(OM_uint32))
 		return errno;
@@ -75,7 +92,8 @@ int writeremote(gss_buffer_desc * buffer) {
 	gss_release_buffer(&min, buffer);
 	if(s < buffer->length)
 		return errno;
-	syslog(LOG_DEBUG, "Wrote %d bytes to remote host", s);
+	if(verbose)
+		syslog(LOG_DEBUG, "Wrote %d bytes to remote host", s);
 	return 0;
 }
 
@@ -118,8 +136,6 @@ int main(int argc, char ** argv) {
 						&remotein, GSS_C_NO_CHANNEL_BINDINGS, &client,
 						&doid, &remoteout, &ret_flags, NULL, NULL);
 		gss_release_buffer(&lmin, &remotein);
-		if(verbose)
-			syslog(LOG_DEBUG, "Accepted security context %d %d", maj, min);
 		if(remoteout.length > 0) {
 			OM_uint32 lmin;
 			rc = writeremote(&remoteout);
@@ -129,8 +145,8 @@ int main(int argc, char ** argv) {
 		if(maj != GSS_S_COMPLETE && maj != GSS_S_CONTINUE_NEEDED) {
 			if(context != GSS_C_NO_CONTEXT)
 				gss_delete_sec_context(&lmin, &context, GSS_C_NO_BUFFER);
-			syslog(LOG_ERR, "Error initializing security context %d:%d",
-							maj, min);
+			syslog(LOG_ERR, "Error initializing security context");
+			display_gss_err(maj, min);
 			return -1;
 		}
 	} while(maj == GSS_S_CONTINUE_NEEDED);
@@ -148,7 +164,7 @@ int main(int argc, char ** argv) {
 		syslog(LOG_DEBUG, "Opened tun/tap device to fd %d", tapfd);
 
 	memset(&ifr, 0, sizeof(ifr));
-	ifr.ifr_flags = IFF_TAP | IFF_NO_PI | IFF_UP;
+	ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
 	rc = ioctl(tapfd, TUNSETIFF, (void*)&ifr);
 	if(rc < 0) {
 		rc = errno;
@@ -173,7 +189,7 @@ int main(int argc, char ** argv) {
 	int ts = socket(PF_UNIX, SOCK_STREAM, 0);
 	ioctl(ts, SIOCGIFFLAGS, &ifr);
 	ifr.ifr_flags |= IFF_UP;
-	ioctl(ts, SIOCSIFFLAGS, &ifs);
+	ioctl(ts, SIOCSIFFLAGS, &ifr);
 	close(ts);
 
 	pfds[0].fd = 0;
@@ -182,8 +198,12 @@ int main(int argc, char ** argv) {
 	pfds[1].events = POLLIN;
 
 	if(verbose)
+		syslog(LOG_DEBUG, "Negotiating MTU.");
+	
+
+	if(verbose)
 		syslog(LOG_DEBUG, "Starting listener loop.");
-	while(poll(pfds, 2, -1)) {
+	while(rc = poll(pfds, 2, -1)) {
 		if(pfds[0].revents == POLLIN) {
 			rc = readremote(&remotein);
 			gss_buffer_desc plaintext;
@@ -199,8 +219,8 @@ int main(int argc, char ** argv) {
 			maj = gss_unwrap(&min, context, &remotein, &plaintext,
 							&confstate, NULL);
 			if(maj != GSS_S_COMPLETE) {
-				syslog(LOG_ERR, "Error unwrapping packet from remote host: %d:%d",
-								maj, min);
+				syslog(LOG_ERR, "Error unwrapping packet from remote host");
+				display_gss_err(maj, min);
 				break;
 			}
 
@@ -223,7 +243,11 @@ int main(int argc, char ** argv) {
 			
 			maj = gss_wrap(&min, context, 1, GSS_C_QOP_DEFAULT, &plaintext, 
 							&confstate, &remoteout);
-
+			if(maj != GSS_S_COMPLETE) {
+				syslog(LOG_ERR, "Error wrapping packet for remote host.");
+				display_gss_err(maj, min);
+				break;
+			}
 			rc = writeremote(&remoteout);
 			memset(plaintext.value, 0, 1500);
 			free(plaintext.value);
