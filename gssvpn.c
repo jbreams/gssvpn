@@ -10,6 +10,7 @@
 #include <gssapi/gssapi.h>
 #include <unistd.h>
 #include <net/if.h>
+#include <netinet/tcp.h>
 #if defined(HAVE_IF_TUN)
 #include <linux/if_tun.h>
 #endif
@@ -20,7 +21,7 @@
 
 #define SERVICE_NAME "gssvpn"
 
-static int verbose=1;
+static int verbose=0;
 
 void gss_disp_loop(OM_uint32 status, OM_uint32 type) {
 	gss_buffer_desc status_string = { 0, 0 };
@@ -49,7 +50,7 @@ int connectto(char * host, int port, char * service) {
 	struct hostent * hp;
 	struct servent * sv;
 	struct sockaddr_in remote_saddr;
-	int s;
+	int s, flag = 1;
 
 	if(service && !port) {
 		sv = getservbyname(service, "tcp");
@@ -85,21 +86,37 @@ int connectto(char * host, int port, char * service) {
 		close(s);
 		return -1;
 	}
+	
+	setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(int));
 	return s;
 }
 
 int readremote(gss_buffer_desc * buffer, int socket) {
 	buffer->length = 0;
-	size_t r = recv(socket, (void*)&buffer->length, sizeof(OM_uint32), 0);
-	if(r < sizeof(OM_uint32) || buffer->length == 0)
+	size_t r;
+	r = recv(socket, (void*)&buffer->length, sizeof(OM_uint32), 0);
+	if(r < sizeof(OM_uint32) || buffer->length == 0) {
 		return errno;
+	}
 
 	buffer->length = ntohl(buffer->length);
 	buffer->value = malloc(buffer->length + 1);
-	r = recv(socket, buffer->value, buffer->length, 0);
+	r = 0;
 
-	if(r < buffer->length)
-		return errno;
+	do {
+		size_t n;
+		n = recv(socket, buffer->value + r,
+						buffer->length - r, 0);
+		if(n < 1) {
+			n = errno;
+			fprintf(stderr, "Received data is less than expected: %d < %d\n",
+							r, buffer->length);
+			free(buffer->value);
+			return n;
+		}
+		r += n;
+	} while(r < buffer->length);
+
 	else if(verbose)
 		fprintf(stderr, "Read %d bytes from remote host\n", r);
 	return 0;
@@ -115,7 +132,8 @@ int writeremote(gss_buffer_desc * buffer, int socket) {
 	gss_release_buffer(&min, buffer);
 	if(s < buffer->length)
 		return errno;
-	fprintf(stderr, "Wrote %d bytes to remote host\n", s);
+	if(verbose)
+		fprintf(stderr, "Wrote %d bytes to remote host\n", s);
 	return 0;
 }
 
@@ -223,13 +241,13 @@ int main(int argc, char ** argv) {
 			rc = readremote(&recvbuf, sfd);
 			gss_buffer_desc plaintext;
 			if(rc != 0) {
-				fprintf(stderr, "Error reading from remote host: %s",
+				fprintf(stderr, "Error reading from remote host: %s\n",
 								strerror(rc));
 				break;
 			}
 
 			if(recvbuf.length == 0) {
-				fprintf(stderr, "Remote host has closed the connection.");
+				fprintf(stderr, "Remote host has closed the connection.\n");
 				break;
 			}
 
@@ -257,7 +275,7 @@ int main(int argc, char ** argv) {
 								plaintext.length);
 
 			if(plaintext.length < 0) {
-				fprintf(stderr, "Error receiving packet from ethernet bridge: %s",
+				fprintf(stderr, "Error receiving packet from ethernet bridge: %s\n",
 								strerror(errno));
 				break;
 			}

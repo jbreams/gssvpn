@@ -74,9 +74,18 @@ int readremote(gss_buffer_desc * buffer) {
 
 	buffer->length = ntohl(buffer->length);
 	buffer->value = malloc(buffer->length + 1);
-	r = read(STDIN, buffer->value, buffer->length);
-	if(r < buffer->length)
-		return errno;
+	r = 0;
+	do {
+		size_t n = read(STDIN, buffer->value + r,
+						buffer->length - r);
+		if(n < 1) {
+			n = errno;
+			syslog(LOG_ERR, "Received less than expected from remote host: %d < %d: %s",
+							r, buffer->length, strerror(n));
+			return n;
+		}
+		r += n;
+	} while(r < buffer->length);
 	else if(verbose)
 		syslog(LOG_DEBUG, "Read %d bytes from remote host", r);
 	return 0;
