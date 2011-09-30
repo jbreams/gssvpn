@@ -117,7 +117,7 @@ int readremote(gss_buffer_desc * buffer, int socket) {
 		r += n;
 	} while(r < buffer->length);
 
-	else if(verbose)
+	if(verbose)
 		fprintf(stderr, "Read %d bytes from remote host\n", r);
 	return 0;
 }

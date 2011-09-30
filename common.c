@@ -124,24 +124,27 @@ int recv_packet(int s, gss_buffer_desc * out, struct sockaddr_in * peer) {
 	return 1;
 }
 
-int send_packet(int s, gss_buffer_desc * out, char type,
+int send_packet(int s, gss_buffer_desc * out,
 			   struct sockaddr_in * peer, int bs) {
 	char * inbuff = malloc(bs + 9);
 	char * lock = out->value;
+	char pac;
 	OM_uint32 seq = get_seq(peer);
-	OM_uint32 left = out->length;
+	OM_uint32 left = 0;
+	if(out)
+		left = out->length;
 	size_t r;
-	
-	if(type == 0) {
-		type = out->length / bs;
+
+	if(out->length)
+		pac = out->length / bs;
 		if(out->length % bs)
-			type++;
+			pac++;
 	}
-	memcpy(inbuff, &left 4);
+	memcpy(inbuff, &left, 4);
 	memcpy(inbuff + 4, &seq, 4);
 	do {
 		size_t tosend = (left > bs ? bs : left) + 9
-		memcpy(inbuff + 8, &type, 1);
+		memcpy(inbuff + 8, &pac, 1);
 		if(left == 0) {
 			r = sendto(s, inbuff, 9, 0, peer, sizeof(struct sockaddr_in));
 			break;
@@ -160,8 +163,8 @@ int send_packet(int s, gss_buffer_desc * out, char type,
 		}
 		left -= r - 9;
 		lock += r - 9;
-		type--;
-	} while(type);
+		pac--;
+	} while(pac);
 
 	free(inbuff);
 	return (r < 0?-1:0);

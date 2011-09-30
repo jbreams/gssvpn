@@ -22,24 +22,28 @@
 
 struct conn * clients;
 struct pbuff * packets;
+gss_cred_id_t srvcreds;
 int pbuffcount = 254;
 int conncount = 254;
 int pbuffperconn = 64;
 int maxbufsize = 1500;
 int verbose = 0;
 
-struct pbuff * get_packet(struct sockaddr_in * addr, OM_uint32 seq, 
-				OM_uint32 len, int * bs) {
-	struct conn * conn = NULL;
-	struct packet * packet = NULL;
+struct conn * get_conn(struct sockaddr_in * peer) {
 	int i;
 	for(i = 0; i < conncount; i++) {
-		if(memcmp(&clients[i].addr, addr,
-					sizeof(struct sockaddr_in)) == 0) {
-			conn = &clients[i];
-			break;
-		}
+		if(memcmp(&clients[i].addr, peer,
+			sizeof(struct sockaddr_in)) == 0)
+				return &clients[i];
 	}
+	return NULL;
+}
+
+struct pbuff * get_packet(struct sockaddr_in * addr, OM_uint32 seq, 
+				OM_uint32 len, int * bs) {
+	struct conn * conn = get_conn(addr);
+	struct packet * packet = NULL;
+	int i;
 
 	if(!conn)
 		return NULL;
@@ -90,11 +94,9 @@ void free_packet(struct pbuff * buff) {
 
 OM_uint32 get_seq(struct sockaddr_in * peer) {
 	int i;
-	for(i = 0; i < conncount; i++) {
-		if(memcmp(&clients[i].addr, peer,
-			sizeof(struct sockaddr_in)) == 0)
-				return ++clients[i].seq;
-	}
+	struct conn * client = get_conn(peer);
+	if(client)
+		return ++client->seq;
 	return 0;
 }
 
@@ -170,13 +172,62 @@ int process_frame(int s, gss_buffer_desc * plaintext, struct conn * client) {
 		return -1;
 	}
 
-	rc = send_packet(s, &crypted, 0, client->addr, client->bs);
+	rc = send_packet(s, &crypted, client->addr, client->bs);
 	gss_release_buffer(&min, &crypted);
 	return rc;
 }
 
+int client_gss_init(int s, gss_buffer_desc * packet, struct sockaddr_in * peer) {
+	gss_OID doid;
+	gss_name_t client;
+	OM_uint32 maj, min, retflags;
+	gss_buffer_desc contbuf;
+	struct conn * client = get_conn(peer);
+	int i;
+
+	if(client == NULL) {
+		for(i = 0; i < conncount; i++) {
+			if(clients[i].context == GSS_C_NO_CONTEXT) {
+				client = &clients[i];
+				memset(client, 0, sizeof(struct conn));
+				memcpy(&client.addr, peer, sizeof(struct sockaddr_in*));
+				break;
+			}
+		}
+	}
+
+	if(client == NULL) {
+		log(1, "No empty client slots available for %s",
+				inet_ntoa(peer->s_addr));
+		return -1;
+	}
+
+	maj = gss_accept_sec_context(&min, &client->context, srvcreds, &crypted,
+				&contbuf, &retflags, NULL, NULL);
+	client->gssstate = maj;
+	if(maj == GSS_S_CONTINUE_NEEDED) {
+		i = send_packet(s, &crypted, 0, peer, maxbufsize);
+		gss_release_buffer(&min, &crypted);
+	}
+	else {
+		crypted.value = malloc(maxbufsize);
+		crypted.length = maxbufsize;
+		i = send_packet(s, NULL, peer, maxbufsize);
+		gss_release_buffer(&min, &crypted);
+	}
+	return i;
+}
+
+int client_net_init(int s, gss_buffer_desc * packet, struct sockaddr_in * peer) {
+	OM_uint16 bs;
+	char macdst[6];
+
+	memcpy(macdst, packet->value, 6);
+	memcpy(&bs, packet->value + 6, 2);
+	bs = ntohs(bs);
+}
+
 int main(int argc, char ** argv) {
-	gss_cred_id_t srvcreds;
 	int rc, tapfd, netfd, i;
 	OM_uint32 maj, min, ret_flags;
 	gss_OID doid;
@@ -227,7 +278,20 @@ int main(int argc, char ** argv) {
 		if(pfds[1].revents == POLLIN) {
 			struct sockaddr_in peer;
 			gss_buffer_desc crypted;
-			rc = recv_packet(netfd, &crypted, 
+			rc = recv_packet(netfd, &crypted, &peer);
+			struct conn * client = get_conn(peer);
+
+			switch(rc) {
+				case -2:
+					client_gss_init(netfd, &crypted, &peer);
+					break;
+				case -3:
+
+			}
+
+			if(client == NULL) {
+				
+			}
 		}
 	}
 

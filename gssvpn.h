@@ -9,6 +9,7 @@ struct pbuff {
 
 struct conn {
 	gss_ctx_id_t context;
+	OM_uint32 gssstate;
 	sockaddr_in addr;
 	unsigned long seq;
 	int bs;
@@ -17,7 +18,7 @@ struct conn {
 };
 
 void display_gss_err(OM_uint32 major, OM_uint32 minor);
-int send_packet(int s, gss_buffer_desc * out, char type,
+int send_packet(int s, gss_buffer_desc * out,
 			struct sockaddr_in * peer, int bs);
 int recv_packet(int s, gss_buffer_desc * out, 
 			struct sockaddr_in * peer);
