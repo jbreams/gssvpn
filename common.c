@@ -75,7 +75,7 @@ int open_net(short port) {
 int recv_packet(int s, gss_buffer_desc * out, struct sockaddr_in * peer) {
 	socklen_t ral = sizeof(ra);
 	char * inbuff = malloc(maxbufsize);
-	OM_uint32 lenfield, seqfield;
+	OM_uint16 lenfield, seqfield;
 	int i, auth, bs = maxbufsize;
 	char pacfield;
 	struct pbuff * packet = NULL;
@@ -87,16 +87,16 @@ int recv_packet(int s, gss_buffer_desc * out, struct sockaddr_in * peer) {
 				inet_ntoa(peer->s_addr), strerror(r));
 		return -1;
 	}
-	memcpy(&lenfield, inbuff, 4);
-	memcpy(&seqfield, inbuff + 4, 4);
-	memcpy(&pacfield, inbuff + 8, 1);
-	lenfield = ntohl(lenfield);
-	seqfield = ntohl(seqfield);
+	memcpy(&lenfield, inbuff, 2);
+	memcpy(&seqfield, inbuff + 2, 2);
+	memcpy(&pacfield, inbuff + 4, 1);
+	lenfield = ntohs(lenfield);
+	seqfield = ntohs(seqfield);
 	if(pacfield < 0) {
 		if(lenfield > 0) {
 			out->length = lenfield;
 			out->value = malloc(lenfield);
-			memcpy(out->value, inbuff + 9, lenfield);
+			memcpy(out->value, inbuff + 5, lenfield);
 		}
 		return abs(pacfield);
 	}
@@ -105,13 +105,13 @@ int recv_packet(int s, gss_buffer_desc * out, struct sockaddr_in * peer) {
 	if(packet == NULL && lenfield <= bs) {
 		out->length = lenfield;
 		out->value = malloc(lenfield);
-		memcpy(out->value, inbuff + 9, lenfield);
+		memcpy(out->value, inbuff + 5, lenfield);
 		free(inbuff);
 		return 0;
 	}
 
-	memcpy(packet->buff + (bs * pacfield), inbuf + 9, r - 9);
-	packet->have += r - 9;
+	memcpy(packet->buff + (bs * pacfield), inbuf + 5, r - 5);
+	packet->have += r - 5;
 	free(inbuf);
 
 	if(packet->have == packet->len) {
@@ -126,11 +126,11 @@ int recv_packet(int s, gss_buffer_desc * out, struct sockaddr_in * peer) {
 
 int send_packet(int s, gss_buffer_desc * out,
 			   struct sockaddr_in * peer, int bs) {
-	char * inbuff = malloc(bs + 9);
+	char * inbuff = malloc(bs + 5);
 	char * lock = out->value;
 	char pac;
-	OM_uint32 seq = get_seq(peer);
-	OM_uint32 left = 0;
+	OM_uint16 seq = get_seq(peer);
+	OM_uint16 left = 0;
 	if(out)
 		left = out->length;
 	size_t r;
@@ -140,17 +140,17 @@ int send_packet(int s, gss_buffer_desc * out,
 		if(out->length % bs)
 			pac++;
 	}
-	memcpy(inbuff, &left, 4);
-	memcpy(inbuff + 4, &seq, 4);
+	memcpy(inbuff, &left, 2);
+	memcpy(inbuff + 2, &seq, 2);
 	do {
-		size_t tosend = (left > bs ? bs : left) + 9
-		memcpy(inbuff + 8, &pac, 1);
+		size_t tosend = (left > bs ? bs : left) + 5
+		memcpy(inbuff + 4, &pac, 1);
 		if(left == 0) {
-			r = sendto(s, inbuff, 9, 0, peer, sizeof(struct sockaddr_in));
+			r = sendto(s, inbuff, 5, 0, peer, sizeof(struct sockaddr_in));
 			break;
 		}
 
-		memcpy(inbuff + 9, lock, tosend - 9);
+		memcpy(inbuff + 5, lock, tosend - 5);
 		r = sendto(s, inbuff, tosend, 0, peer, sizeof(struct sockaddr_in));
 		if(r < 0) {
 			log(1, "Error sending to %s: %s",
@@ -161,13 +161,13 @@ int send_packet(int s, gss_buffer_desc * out,
 						inet_ntoa(peer->s_addr), r, tosend);
 			break;
 		}
-		left -= r - 9;
-		lock += r - 9;
+		left -= r - 5;
+		lock += r - 5;
 		pac--;
 	} while(pac);
 
 	free(inbuff);
-	return (r < 0?-1:0);
+	return (r < 0 ? -1 : 0);
 }
 
 void gss_disp_loop(OM_uint32 status, OM_uint32 type) {
