@@ -221,7 +221,7 @@ int send_packet(int s, gss_buffer_desc * out,
 	uint8_t upto = 0;
 	size_t r;
 
-	if(out->length) {
+	if(out && out->length) {
 		ph.len = out->length;
 		upto = ph.len / bs;
 		if(ph.len % bs)
