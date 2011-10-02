@@ -46,60 +46,12 @@ int get_server_creds(gss_cred_id_t * sco, char * service_name) {
 
 	gss_release_name(&min_stat, &server_name);
 	if(maj_stat != GSS_S_COMPLETE) {
+		logit(1, "Error acquiring server credentials.");
 		display_gss_err(maj_stat, min_stat);
 		return -1;
 	} else if(verbose)
 		logit(-1, "Acquired credentials for SERVICE_NAME");
 	return 0;
-}
-
-int open_tap(char * dev) {
-	struct ifreq ifr;
-	memset(&ifr, 0, sizeof(struct ifreq));
-#ifdef HAVE_IF_TUN
-	int tapfd = open("/dev/net/tun", O_RDWR), rc;
-
-	if(tapfd < 0) {
-		tapfd = errno;
-		logit(1, "Error opening TAP device: %s",
-					strerror(tapfd));
-		return -1;
-	} else if(verbose)
-		logit(-1, "Opened TAP device to fd %d", tapfd);
-
-	ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
-	if(dev)
-		strncpy(ifr.ifr_name, dev, sizeof(ifr.ifr_name));
-	rc = ioctl(tapfd, TUNSETIFF, (void*)&ifr);
-	if(rc < 0) {
-		rc = errno;
-		logit(1, "Failed to configure TAP interface %s: %s",
-					ifr.ifr_name, strerror(rc));
-		close(tapfd);
-		return -1;
-	} else if(verbose)
-		logit(-1, "Configured TAP interface %s", ifr.ifr_name);
-#else
-	char path[255];
-	snprintf(path, 255, "/dev/%s", dev);
-	int tapfd = open(dev, O_RDWR);
-	if(tapfd < 0) {
-		tapfd = errno;
-		logit(1, "Error opening TAP device %s: %s",
-					dev, strerror(tapfd));
-		return -1;
-	}
-
-	strncpy(ifr.ifr_name, dev, sizeof(ifr.ifr_name));
-#endif
-
-	int ts = socket(PF_UNIX, SOCK_STREAM, 0);
-	ioctl(ts, SIOCGIFFLAGS, &ifr);
-	ifr.ifr_flags |= IFF_UP;
-	ioctl(ts, SIOCSIFFLAGS, &ifr);
-	close(ts);
-
-	return tapfd;
 }
 
 int process_frame(gss_buffer_desc * plaintext, struct conn * client) {
@@ -266,16 +218,13 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	client = get_conn(&peer);
 	if(!client)
 		return;
-	if(client->bs < 0) {
-		char bogus[PBUFF_SIZE];
-		gss_buffer_desc send = { PBUFF_SIZE, bogus };
-
-		send_packet(netfd, &send, &client->addr, tapmtu, PAC_NETINIT);
+	if(client->bs < 0 && pac != PAC_NETINIT) {
+		send_packet(netfd, NULL, &client->addr, tapmtu, PAC_NETINIT);
 		gss_release_buffer(&min, &crypted);
 		return;
 	}
 
-	if(client->gssstate == GSS_S_CONTINUE_NEEDED) {
+	if(client->gssstate == GSS_S_CONTINUE_NEEDED && pac != PAC_GSSINIT) {
 		send_packet(netfd, NULL, &peer, client->bs, PAC_GSSINIT);
 		gss_release_buffer(&min, &crypted);
 		return;
@@ -302,10 +251,9 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		handle_gssinit(client, &crypted);
 	else if(pac == PAC_NETINIT) {
 		unlink_conn(client, CLIENT_ETHERNET);
-		memcpy(&client->bs, crypted.value, sizeof(int));
-		client->bs = ntohs(client->bs);
+		client->bs = crypted.length;
 		client->ethernext = NULL;
-		memcpy(client->mac, crypted.value + 2, 6);
+		memcpy(client->mac, crypted.value, 6);
 		char eh = hash(client->mac, 6);
 		if(clients_ether[eh])
 			client->ethernext = clients_ether[eh];
@@ -350,5 +298,9 @@ int main(int argc, char ** argv) {
 		reapclients < reappackets ? reapclients:reappackets, 0);
 	ev_periodic_start(loop, &reaper);
 	ev_run(loop, 0);
+
+	close(tapfd);
+	close(netfd);
+
 	return 0;
 }

@@ -12,9 +12,11 @@
 #define PBUFF_SIZE 3000
 
 struct pbuff {
+#ifdef GSSVPN_SERVER
 	struct conn * parent;
+#endif
 	struct pbuff * next;
-	char hash;
+	uint8_t hash;
 	unsigned int len;
 	unsigned int have;
 	unsigned int seq;
@@ -22,6 +24,7 @@ struct pbuff {
 	time_t touched;
 };
 
+#ifdef GSSVPN_SERVER
 struct conn {
 	gss_ctx_id_t context;
 	unsigned long gssstate;
@@ -34,6 +37,7 @@ struct conn {
 	struct conn * ipnext;
 	struct conn * ethernext;
 };
+#endif
 
 void display_gss_err(OM_uint32 major, OM_uint32 minor);
 int send_packet(int s, gss_buffer_desc * out,
@@ -44,6 +48,8 @@ void logit(int level, char * fmt, ...);
 uint16_t get_seq(struct sockaddr_in * peer);
 void free_packet(struct pbuff * buff);
 char hash(char * in, int len);
+int open_tap(char * dev);
+int open_net(short port);
 
 #ifdef GSSVPN_SERVER
 struct conn * get_conn(struct sockaddr_in * peer);

@@ -77,6 +77,55 @@ char hash(char * in, int len) {
 	return hash;
 }
 
+int open_tap(char * dev) {
+	struct ifreq ifr;
+	memset(&ifr, 0, sizeof(struct ifreq));
+#ifdef HAVE_IF_TUN
+	int tapfd = open("/dev/net/tun", O_RDWR), rc;
+
+	if(tapfd < 0) {
+		tapfd = errno;
+		logit(1, "Error opening TAP device: %s",
+					strerror(tapfd));
+		return -1;
+	} else if(verbose)
+		logit(-1, "Opened TAP device to fd %d", tapfd);
+
+	ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+	if(dev)
+		strncpy(ifr.ifr_name, dev, sizeof(ifr.ifr_name));
+	rc = ioctl(tapfd, TUNSETIFF, (void*)&ifr);
+	if(rc < 0) {
+		rc = errno;
+		logit(1, "Failed to configure TAP interface %s: %s",
+					ifr.ifr_name, strerror(rc));
+		close(tapfd);
+		return -1;
+	} else if(verbose)
+		logit(-1, "Configured TAP interface %s", ifr.ifr_name);
+#else
+	char path[255];
+	snprintf(path, 255, "/dev/%s", dev);
+	int tapfd = open(path, O_RDWR);
+	if(tapfd < 0) {
+		tapfd = errno;
+		logit(1, "Error opening TAP device %s: %s",
+					path, strerror(tapfd));
+		return -1;
+	}
+
+	strncpy(ifr.ifr_name, dev, sizeof(ifr.ifr_name));
+#endif
+
+	int ts = socket(PF_UNIX, SOCK_STREAM, 0);
+	ioctl(ts, SIOCGIFFLAGS, &ifr);
+	ifr.ifr_flags |= IFF_UP;
+	ioctl(ts, SIOCSIFFLAGS, &ifr);
+	close(ts);
+
+	return tapfd;
+}
+
 int open_net(short port) {
 	struct sockaddr_in me;
 	int s, rc;
@@ -135,6 +184,14 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 	ph.seq = ntohs(ph.seq);
 	r -= sizeof(ph);
 
+	if(ph.pac == PAC_NETINIT) {
+		out->length = r;
+		out->value = malloc(r);
+		memcpy(out->value, inbuff + sizeof(ph), r);
+		*pacout = ph.pac;
+		return 0;
+	}
+
 	if(ph.len < r) {
 		if(ph.len > 0) {
 			out->length = ph.len;
@@ -162,7 +219,7 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 
 int send_packet(int s, gss_buffer_desc * out,
 		struct sockaddr_in * peer, int bs, char pac) {
-	char outbuf[3000];
+	char outbuf[PBUFF_SIZE];
 	char * lock = out->value;
 	struct header ph;
 	memset(&ph, 0, sizeof(ph));
@@ -172,6 +229,20 @@ int send_packet(int s, gss_buffer_desc * out,
 		ph.len = out->length;
 	uint16_t left = ph.len;
 	size_t r;
+
+	if(pac == PAC_NETINIT && out->length) {
+		ph.len = PBUFF_SIZE - sizeof(ph);
+		memcpy(outbuf, &ph, sizeof(ph));
+		memcpy(outbuf + sizeof(ph), out->value, out->length);
+		r = sendto(s, outbuf, PBUFF_SIZE, 0, 
+					(struct sockaddr*)peer, sizeof(struct sockaddr_in));
+		if(r < 0) {
+			logit(1, "Error sending to %s: %s",
+					inet_ntoa(peer->sin_addr), strerror(errno));
+			return -1;
+		}
+		return r - sizeof(ph);
+	}
 
 	if(ph.len) {
 		ph.chunk = ph.len / bs;
