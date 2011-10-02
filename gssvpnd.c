@@ -253,8 +253,6 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	else if(pac == PAC_GSSINIT)
 		handle_gssinit(client, &crypted);
 	else if(pac == PAC_NETINIT) {
-		uint16_t bsout;
-		gss_buffer_desc out = { sizeof(uint16_t), &bsout };
 		unlink_conn(client, CLIENT_ETHERNET);
 		client->bs = crypted.length - 6;
 		client->ethernext = NULL;
@@ -263,7 +261,6 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		if(clients_ether[eh])
 			client->ethernext = clients_ether[eh];
 		clients_ether[eh] = client;
-		bsout = htons(client->bs);
 		send_packet(netfd, &out, &client->addr, client->bs, PAC_NETINIT);
 	}
 	else if(pac == PAC_SHUTDOWN)
