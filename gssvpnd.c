@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <syslog.h>
-#include <ev.h>
+#include <libev/ev.h>
 #include "gssvpn.h"
 
 struct conn * clients_ip[255];

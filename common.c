@@ -45,6 +45,7 @@ void logit(int level, char * fmt, ...) {
 //	syslogv(err, fmt, ap);
 #endif
 	vfprintf(stderr, fmt, ap); 
+	fprintf(stderr, "\n");
 	va_end(ap);
 }
 
