@@ -186,6 +186,8 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 	r -= sizeof(ph);
 
 	if(ph.len < r || ph.pac == PAC_NETINIT || ph.pac == PAC_NOOP) {
+		if(ph.len > r)
+			ph.len = r;
 		if(ph.len > 0) {
 			out->length = ph.len;
 			out->value = malloc(ph.len);
