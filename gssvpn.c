@@ -29,7 +29,7 @@ extern struct pbuff * packets[255];
 int do_netinit() {
 	struct ifaddrs * ifp, *cifp;
 	char outbuff[PBUFF_SIZE + 6];
-	gss_buffer_desc out = { 6, outbuff };
+	gss_buffer_desc out = { PBUFF_SIZE + 6, outbuff };
 	int rc;
 	if(getifaddrs(&ifp) < 0) {
 		logit(1, "Error getting list of interfaces %m.");
@@ -55,15 +55,17 @@ int do_netinit() {
 }
 
 int do_gssinit(gss_buffer_desc * in) {
-	gss_buffer_desc tokenout;
 	gss_name_t target_name;
 	char prodid[255];
+	gss_buffer_desc tokenout = { 255, &prodid };
 	OM_uint32 min;
 
-	snprintf(prodid, 255, "%s@%s", service, hostname);
+	tokenout.length = snprintf(prodid, 255, "%s@%s", service, hostname);
 	gssstate = gss_import_name(&min, &tokenout, 
 					(gss_OID)GSS_C_NT_HOSTBASED_SERVICE,
 					&target_name);
+	tokenout.value = NULL;
+	tokenout.length = 0;
 
 	if(context == GSS_C_NO_CONTEXT)
 		gss_delete_sec_context(&min, &context, NULL);
