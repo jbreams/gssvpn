@@ -19,6 +19,7 @@ struct pbuff {
 	unsigned int have;
 	unsigned int seq;
 	char buff[PBUFF_SIZE];
+	time_t touched;
 };
 
 struct conn {
@@ -39,7 +40,7 @@ int send_packet(int s, gss_buffer_desc * out,
 			struct sockaddr_in * peer, int bs, char pac); 
 int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 			struct sockaddr_in * peer);
-void log(int level, char * fmt, ...);
+void logit(int level, char * fmt, ...);
 uint16_t get_seq(struct sockaddr_in * peer);
 void free_packet(struct pbuff * buff);
 char hash(char * in, int len);

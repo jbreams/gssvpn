@@ -11,7 +11,6 @@
 #include <unistd.h>
 #include <net/if.h>
 #include <netinet/in.h>
-#include <netinet/udp.h>
 #if defined(HAVE_IF_TUN)
 #include <linux/if_tun.h>
 #endif
@@ -19,6 +18,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <syslog.h>
+#include <stdarg.h>
 #include "gssvpn.h"
 
 extern int verbose;
@@ -30,7 +30,7 @@ struct header {
 	uint8_t chunk;
 };
 
-void log(int level, char * fmt, ...) {
+void logit(int level, char * fmt, ...) {
 	int err;
 	va_list ap;
 	
@@ -41,7 +41,10 @@ void log(int level, char * fmt, ...) {
 		err = LOG_DEBUG;
 	else
 		err = LOG_ERR;
-	syslogv(err, fmt, ap);
+#ifndef DARWIN
+//	syslogv(err, fmt, ap);
+#endif
+	vfprintf(stderr, fmt, ap); 
 	va_end(ap);
 }
 
@@ -81,7 +84,7 @@ int open_net(short port) {
 	s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if(s < 0) {
 		rc = errno;
-		log(1, "Failed to open UDP socket: %s", strerror(rc));
+		logit(1, "Failed to open UDP socket: %s", strerror(rc));
 		return -1;
 	}
 
@@ -92,7 +95,7 @@ int open_net(short port) {
 	if(bind(s, (struct sockaddr*)&me, sizeof(me)) == -1) {
 		rc = errno;
 		close(s);
-		log(1, "Failed to bind socket to port %d: %s",
+		logit(1, "Failed to bind socket to port %d: %s",
 					port, strerror(rc));
 		return -1;
 	}
@@ -100,7 +103,7 @@ int open_net(short port) {
 	rc = getsockopt(s, SOL_IP, IP_MTU, &maxbuflen, &rc);
 	if(rc < 0) {
 		rc = errno;
-		log(1, "Error getting MTU from UDP socket: %s",
+		logit(1, "Error getting MTU from UDP socket: %s",
 					strerror(rc));
 		close(s);
 		return -1;
@@ -122,7 +125,7 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 		if(r < 0 && errno == EAGAIN)
 			return 1;
 		r = errno;
-		log(1, "Error receiving packet from %s: %s",
+		logit(1, "Error receiving packet from %s: %s",
 				inet_ntoa(peer->sin_addr), strerror(r));
 		return -1;
 	}
@@ -153,6 +156,7 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 		free_packet(packet);
 		return 0;
 	}
+	packet->touched = time(NULL);
 	return 1;
 }
 
@@ -184,11 +188,11 @@ int send_packet(int s, gss_buffer_desc * out,
 		r = sendto(s, outbuf, tosend + sizeof(ph), 0, 
 					(struct sockaddr*)peer, sizeof(struct sockaddr_in));
 		if(r < 0) {
-			log(1, "Error sending to %s: %s",
+			logit(1, "Error sending to %s: %s",
 					inet_ntoa(peer->sin_addr), strerror(errno));
 			break;
 		} else if(r < tosend + sizeof(ph)) {
-			log(1, "Sent less than expected to %s: %d < %d",
+			logit(1, "Sent less than expected to %s: %d < %d",
 					inet_ntoa(peer->sin_addr), r, tosend);
 			break;
 		}
@@ -211,7 +215,7 @@ void gss_disp_loop(OM_uint32 status, OM_uint32 type) {
 			return;
 
 		if(status_string.value) {
-			log(1, "GSSAPI error %d: %.*s", status,
+			logit(1, "GSSAPI error %d: %.*s", status,
 							status_string.length, status_string.value);
 			gss_release_buffer(&lmin, &status_string);
 		}

@@ -28,7 +28,7 @@ struct conn * get_conn(struct sockaddr_in * peer) {
 
 	client = malloc(sizeof(struct conn));
 	if(client == NULL) {
-		log(1, "Unable to allocate new connection for client");
+		logit(1, "Unable to allocate new connection for client");
 		return NULL;
 	}
 	client->ipnext = clients_ip[h];
@@ -43,16 +43,8 @@ struct conn * get_conn(struct sockaddr_in * peer) {
 	return client;
 }
 
-struct conn * get_conn_ether(char * mac) {
-	char h = hash(mac, 6);
-	struct conn * client = clients_ether[h];
-	while(client && memcmp(client->mac, mac, 6) != 0)
-		client = client->ethernext;
-	return client;
-}
-
 void unlink_conn(struct conn * conn, char which) {
-	char h;
+	uint8_t h;
 	struct conn * last = NULL;
 	if(which & CLIENT_IP) {
 		h = hash((char*)&conn->addr, sizeof(struct sockaddr_in));
@@ -61,6 +53,8 @@ void unlink_conn(struct conn * conn, char which) {
 			last = cur;
 			cur = cur->ipnext;
 		}
+		if(!cur)
+			return;
 		if(last)
 			last->ipnext = conn->ipnext;
 		else
@@ -73,6 +67,8 @@ void unlink_conn(struct conn * conn, char which) {
 			last = cur;
 			cur = cur->ipnext;
 		}
+		if(!cur)
+			return;
 		if(last)
 			last->ethernext = conn->ethernext;
 		else
@@ -101,7 +97,7 @@ struct pbuff * get_packet(struct sockaddr_in * addr, uint16_t seq,
 
 	packet = malloc(sizeof(struct pbuff));
 	if(!packet) {
-		log(1, "Error allocating a packet buffer");
+		logit(1, "Error allocating a packet buffer");
 		return NULL;
 	}
 	packet->len = len;
@@ -130,7 +126,7 @@ void free_packet(struct pbuff * buff) {
 	}
 
 	if(!cur) {
-		log(1, "Trying to free an orphaned packet from conn pool %p", buff);
+		logit(1, "Trying to free an orphaned packet from conn pool %p", buff);
 		return;
 	}
 	
