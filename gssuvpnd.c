@@ -20,85 +20,18 @@
 #include <syslog.h>
 #include "gssvpn.h"
 
-struct conn * clients;
-struct pbuff * packets;
+struct conn * clients_ip[255];
+struct conn * clients_ether[255];
 gss_cred_id_t srvcreds;
-int pbuffcount = 254;
 int conncount = 254;
-int pbuffperconn = 64;
 int maxbufsize = 1500;
+int tapmtu = 1500;
 int verbose = 0;
+int reapclients = 36000;
+int reappackets = 30;
 
-struct conn * get_conn(struct sockaddr_in * peer) {
-	int i;
-	for(i = 0; i < conncount; i++) {
-		if(memcmp(&clients[i].addr, peer,
-			sizeof(struct sockaddr_in)) == 0)
-				return &clients[i];
-	}
-	return NULL;
-}
-
-struct pbuff * get_packet(struct sockaddr_in * addr, OM_uint32 seq, 
-				OM_uint32 len, int * bs) {
-	struct conn * conn = get_conn(addr);
-	struct packet * packet = NULL;
-	int i;
-
-	if(!conn)
-		return NULL;
-
-	for(i = 0; i < pbuffperconn; i++) {
-		if(conn->packets[i] && conn->packets[i]->seq == seq)
-			return conn->packets[i];
-	}
-
-	*bs = conn->bs;
-
-	if(len < conn->bs - 9)
-		return NULL;
-	
-	for(i = 0; i < pbuffcount; i++) {
-		if(packets[i].conn == NULL)
-			break;
-	}
-
-	packet = &packets[i];
-	for(i = 0; i < pbuffperconn; i++) {
-		if(conn->packets[i] == NULL) {
-			conn->packets[i] = packet;
-			break;
-		}
-	}
-
-	packet->seq = seq;
-	packet->len = len;
-	packet->buf = malloc(len);
-	packet->have = 0;
-	return packet;
-}
-
-void free_packet(struct pbuff * buff) {
-	struct conn * conn = buff->conn;
-	int i;
-	for(i = 0; i < pbuffperconn; i++) {
-		if(conn->packets[i] == packet) {
-			conn->packets[i] = NULL;
-			break;
-		}
-	}
-
-	free(buff->buf);
-	memset(buff, 0, sizeof(struct pbuff));
-}
-
-OM_uint32 get_seq(struct sockaddr_in * peer) {
-	int i;
-	struct conn * client = get_conn(peer);
-	if(client)
-		return ++client->seq;
-	return 0;
-}
+int tapfd, netfd;
+const char ether_broadcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
 int get_server_creds(gss_cred_id_t * sco) {
 	gss_buffer_desc name_buff;
@@ -159,7 +92,7 @@ int open_tap(char * dev) {
 	return tapfd;
 }
 
-int process_frame(int s, gss_buffer_desc * plaintext, struct conn * client) {
+int process_frame(gss_buffer_desc * plaintext, struct conn * client) {
 	gss_buffer_desc crypted;
 	OM_uint32 maj, min, confstate;
 	int rc;
@@ -172,67 +105,208 @@ int process_frame(int s, gss_buffer_desc * plaintext, struct conn * client) {
 		return -1;
 	}
 
-	rc = send_packet(s, &crypted, client->addr, client->bs);
+	rc = send_packet(netfd, &crypted, client->addr, client->bs);
 	gss_release_buffer(&min, &crypted);
 	return rc;
 }
 
-int client_gss_init(int s, gss_buffer_desc * packet, struct sockaddr_in * peer) {
-	gss_OID doid;
-	gss_name_t client;
-	OM_uint32 maj, min, retflags;
-	gss_buffer_desc contbuf;
-	struct conn * client = get_conn(peer);
-	int i;
+void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
+	char * framebuf = malloc(tapmtu), dstmac[6];
+	size_t size = read(ios->fd, framebuf, tapmtu);
+	gss_buffer_desc plaintext = { framebuf, size };
+	time_t curtime = time(NULL);
 
-	if(client == NULL) {
-		for(i = 0; i < conncount; i++) {
-			if(clients[i].context == GSS_C_NO_CONTEXT) {
-				client = &clients[i];
-				memset(client, 0, sizeof(struct conn));
-				memcpy(&client.addr, peer, sizeof(struct sockaddr_in*));
-				break;
+	if(size == EAGAIN) {
+		free(tapbuf);
+		return;
+	}
+
+	memcpy(dst, framebuf + 8, 6);
+	if(memcmp(dst, ether_broadcast, 6) == 0) {
+		char i;
+		for(i = 0; i < 255; i++) {
+			struct conn * cur = clients_ether[i];
+			while(cur) {
+				cur->touched = curtime;
+				process_frame(&plaintext, cur);
+				cur = cur->ethernext;
 			}
 		}
+	} else {
+		struct conn * client = get_conn_ether(dstmac); 
+		if(client) {
+			process_frame(&plaintext, client);
+			touched = curtime;
+		}
 	}
-
-	if(client == NULL) {
-		log(1, "No empty client slots available for %s",
-				inet_ntoa(peer->s_addr));
-		return -1;
-	}
-
-	maj = gss_accept_sec_context(&min, &client->context, srvcreds, &crypted,
-				&contbuf, &retflags, NULL, NULL);
-	client->gssstate = maj;
-	if(maj == GSS_S_CONTINUE_NEEDED) {
-		i = send_packet(s, &crypted, 0, peer, maxbufsize);
-		gss_release_buffer(&min, &crypted);
-	}
-	else {
-		crypted.value = malloc(maxbufsize);
-		crypted.length = maxbufsize;
-		i = send_packet(s, NULL, peer, maxbufsize);
-		gss_release_buffer(&min, &crypted);
-	}
-	return i;
+	
+	free(framebuf);
 }
 
-int client_net_init(int s, gss_buffer_desc * packet, struct sockaddr_in * peer) {
-	OM_uint16 bs;
-	char macdst[6];
+/*
+ * This is extremely extremely inefficient, like n^4, where n could be
+ * any number between 0 and infinity. I'm thinking of adding a timeout for
+ * each packet/client in the main event loop, but for now, this at least
+ * gets the idea down on paper.
+ */
+void reap_cb(struct ev_loop *loop, ev_periodic *w, int revents) {
+	char i;
+	time_t curtime = time(NULL);
+	for(i = 0; i < 255; i++) {
+		struct conn * cur = clients_ip[i], * last = NULL;
+		while(cur != NULL) {
+			if(curtime - cur->touched >= reapclients) {
+				unlink_conn(cur, CLIENT_ALL);
+				handle_shutdown(cur);
+				free(cur);
+			}
+			struct pbuff * pb;
+			int j;
+			for(j = 0; j < 255; j++) {
+				for(pb = cur->packets[j]; pb != NULL; pb = pb->next) {
+					if(curtime - pb->touched >= reappackets)
+						free_packet(pb);
+				}
+			}
+			last = cur;
+			cur = cur->next;
+		}
+	}
+}
 
-	memcpy(macdst, packet->value, 6);
-	memcpy(&bs, packet->value + 6, 2);
-	bs = ntohs(bs);
+void send_netinit(struct conn * client) {
+	char bogus[PBUFF_SIZE]
+	struct gss_buffer_desc send = { bogus, tapmtu };
+
+	send_packet(netfd, &send, &client->addr, tapmtu, PAC_NETINIT);
+}
+
+void handle_gssinit(struct conn * client, gss_buffer_desc * intoken) {
+	gss_name_t client_name;
+	gss_OID mech;
+	gss_buffer_desc output, nameout, oidout;
+	OM_uint32 flags, lmin;
+
+	if(client->gssstate == GSS_S_COMPLETE && 
+					client->context != GSS_C_NO_CONTEXT)
+		gss_delete_context(&min, client->context, GSS_C_NO_BUFFER);
+	client->context = GSS_C_NO_CONTEXT;
+
+	maj = gss_accept_sec_context(&min, &client->context, srvcreds, &crypted,
+					NULL, &client_name, &mech, &output, &flags, NULL, NULL);
+	gss_release_buffer(&lmin, &crypted);
+	if(maj != GSS_S_COMPLETE || maj != GSS_S_CONTINUE_NEEDED) {
+		log(1, "Error accepting security context from %s",
+					inet_ntoa(peer.sa_addr));
+		display_gss_err(maj, min);
+		return;
+	}
+	client->gssstate = maj;
+	if(maj == GSS_S_CONTINUE_NEEDED) {
+		send_packet(netfd, &output, &peer, client->bs, PAC_GSSINIT);
+		gss_release_buffer(&lmin, &crypted);
+		return;
+	}
+	
+	send_packet(netfd, NULL, &peer, client->bs, PAC_NOOP);
+	
+	gss_display_name(&lmin, client_name, &nameout, NULL);
+	gss_oid_to_str(&lmin, mech, &oidout);
+
+	log(0, "Authenticated connection for %s (%s) from %s",
+					nameout.value, oidout.value,
+					inet_ntoa(client->addr.sa_addr));
+	gss_release_buffer(&lmin, &nameout);
+	gss_release_buffer(&lmin, &oidout);
+	gss_release_name(&lmin, name);
+	gss_release_oid(&lmin, &mech);
+}
+
+void handle_shutdown(struct client * conn) {
+	struct pbuff * cp;
+	char i;
+	unlink_client(client, CLIENT_ALL);
+	if(client->context != GSS_C_NO_CONTEXT)
+		gss_delete_context(&min, client->context, GSS_C_NO_BUFFER);
+
+	for(i = 0; i < 255; i++) {
+		cp = conn->packets[i];
+		while(cp) {
+			struct pbuff * next = cp->next;
+			free(cp);
+			cp = next;
+		}
+	}
+	free(conn);
+}
+
+void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
+	gss_buffer_desc crypted = GSS_C_NO_BUFFER;
+	char pac;
+	struct sockaddr_in peer;
+	int rc = recv_packet(netfd, &crypted, &pac, &peer);
+	OM_uint32 maj, min;
+	struct conn * client
+
+	if(rc == 1)
+		return;
+
+	client = get_conn(&peer);
+
+	if(pac == PAC_DATA) {
+		gss_buffer_desc plaintext;
+
+		if(client->bs < 0) {
+			send_netinit(client);
+			gss_release_buffer(&min, &crypted);
+			return;
+		}
+		else if(client->gssstate == GSS_S_CONTINUE_NEEDED) {
+			send_packet(netfd, NULL, &peer, client->bs, PAC_GSSINIT);
+			gss_release_buffer(&min, &crypted);
+			return;
+		}
+		maj = gss_unwrap(&min, client->context, &crypted, &plaintext, NULL, NULL);
+		if(maj != GSS_S_COMPLETE) {
+			log(1, "Error unwrapping packet from %s",
+					inet_ntoa(peer.sa_addr));
+			display_gss_err(maj, min);
+			gss_release_buffer(&min, &crypted);
+			return;
+		}
+		write(tapfd, plaintext.value, plaintext.length);
+		gss_release_buffer(&min, &plaintext);
+		free(plaintext.value);
+	}
+	else if(pac == PAC_GSSINIT) {
+		if(client->bs < 0) {
+			send_netinit(client);
+			gss_release_buffer(&min, &crypted);
+			return;
+		}
+		handle_gssinit(client, &crypted);
+	}
+	else if(pac == PAC_NETINIT) {
+		unlink_client(client, CLIENT_ETHERNET);
+		memcpy(&client->bs, crypted.value, sizeof(int));
+		client->bs = ntohs(client->bs);
+		client->ethernext = NULL;
+		memcpy(client->mac, crypted.value + 2, 6);
+		eh = hash(client->mac, 6);
+		if(cur)
+			client->ethernext = clients_ether[eh];
+		clients_ether[eh] = client;
+	}
+	else if(pac == PAC_SHUTDOWN)
+		handle_shutdown(client);
+
+	if(crypted.value)
+		gss_release_buffer(&min, &crypted);
+	client->touched = time(NULL);	
 }
 
 int main(int argc, char ** argv) {
-	int rc, tapfd, netfd, i;
-	OM_uint32 maj, min, ret_flags;
-	gss_OID doid;
-	gss_name_t client;
-	struct pollfd pfds[2];
+	int rc;
 	openlog("gssvpnd", 0, LOG_DAEMON);
 
 	rc = get_server_creds(&srvcreds);
@@ -246,53 +320,5 @@ int main(int argc, char ** argv) {
 	netfd = open_tap(2106);
 	if(netfd < 0)
 		return -1;
-
-	pfds[0].fd = tapfd;
-	pfds[0].events = POLLIN;
-	pfds[1].fd = netfd;
-	pfds[1].events = POLLIN;
-
-	if(verbose)
-		log(-1, "Starting listener loop.");
-
-	while(rc = poll(pfds, 2, -1)) {
-		if(pfds[0].revents == POLLIN) {
-			char dst[6];
-			char * framebuf = malloc(1500);
-			size_t framelen = read(tapfd, framebuf, 1500);
-			memcpy(dst, framebuf + 8, 6);
-			gss_buffer_desc plaintext;
-			plaintext.length = framelen;
-			planetext.value = framebuf;
-			for(i = 0; i < conncount; i++) {
-				if(memcmp(dst, 0xffffffffffffLL, 6) == 0)
-					process_frame(netfd, &plaintext, &clients[i]);
-				else if(memcmp(dst, clients[i].mac, 6) == 0) {
-					process_frame(netfd, &plaintext, &clients[i]);
-					break;
-				}
-			}
-			memset(framebuf, 0, framelen);
-			free(framebuf);
-		}
-		if(pfds[1].revents == POLLIN) {
-			struct sockaddr_in peer;
-			gss_buffer_desc crypted;
-			rc = recv_packet(netfd, &crypted, &peer);
-			struct conn * client = get_conn(peer);
-
-			switch(rc) {
-				case -2:
-					client_gss_init(netfd, &crypted, &peer);
-					break;
-				case -3:
-
-			}
-
-			if(client == NULL) {
-				
-			}
-		}
-	}
 
 }

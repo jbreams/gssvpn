@@ -20,8 +20,14 @@
 #include <syslog.h>
 #include "gssvpn.h"
 
-extern int maxbufsize;
 extern int verbose;
+
+struct header {
+	OM_uint16 len;
+	OM_uint16 seq;
+	unsigned char pac;
+	unsigned char chunk;
+};
 
 void log(int level, char * fmt, ...) {
 	int err;
@@ -36,6 +42,35 @@ void log(int level, char * fmt, ...) {
 		err = LOG_ERR;
 	syslogv(err, fmt, ap);
 	va_end(ap);
+}
+
+/* A "mixing table" of 256 distinct values, in pseudo-random order. */
+unsigned char mixtable[256] = {
+251, 175, 119, 215, 81, 14, 79, 191, 103, 49, 181, 143, 186, 157, 0,
+232, 31, 32, 55, 60, 152, 58, 17, 237, 174, 70, 160, 144, 220, 90, 57,
+223, 59, 3, 18, 140, 111, 166, 203, 196, 134, 243, 124, 95, 222, 179,
+197, 65, 180, 48, 36, 15, 107, 46, 233, 130, 165, 30, 123, 161, 209, 23,
+97, 16, 40, 91, 219, 61, 100, 10, 210, 109, 250, 127, 22, 138, 29, 108,
+244, 67, 207, 9, 178, 204, 74, 98, 126, 249, 167, 116, 34, 77, 193,
+200, 121, 5, 20, 113, 71, 35, 128, 13, 182, 94, 25, 226, 227, 199, 75,
+27, 41, 245, 230, 224, 43, 225, 177, 26, 155, 150, 212, 142, 218, 115,
+241, 73, 88, 105, 39, 114, 62, 255, 192, 201, 145, 214, 168, 158, 221,
+148, 154, 122, 12, 84, 82, 163, 44, 139, 228, 236, 205, 242, 217, 11,
+187, 146, 159, 64, 86, 239, 195, 42, 106, 198, 118, 112, 184, 172, 87,
+2, 173, 117, 176, 229, 247, 253, 137, 185, 99, 164, 102, 147, 45, 66,
+231, 52, 141, 211, 194, 206, 246, 238, 56, 110, 78, 248, 63, 240, 189,
+93, 92, 51, 53, 183, 19, 171, 72, 50, 33, 104, 101, 69, 8, 252, 83, 120,
+76, 135, 85, 54, 202, 125, 188, 213, 96, 235, 136, 208, 162, 129, 190,
+132, 156, 38, 47, 1, 7, 254, 24, 4, 216, 131, 89, 21, 28, 133, 37, 153,
+149, 80, 170, 68, 6, 169, 234, 151
+};
+
+char hash(char * in, int len) {
+	char hash = len;
+	int i;
+	for(i = len; i > 0;)
+		hash = mixtable[hash ^ in[--i]];
+	return hash;
 }
 
 int open_net(short port) {
@@ -72,47 +107,41 @@ int open_net(short port) {
 	return s;
 }
 
-int recv_packet(int s, gss_buffer_desc * out, struct sockaddr_in * peer) {
+int recv_packet(int s, gss_buffer_desc * out, char * pacout,
+		struct sockaddr_in * peer) {
 	socklen_t ral = sizeof(ra);
-	char * inbuff = malloc(maxbufsize);
-	OM_uint16 lenfield, seqfield;
-	int i, auth, bs = maxbufsize;
-	char pacfield;
+	char inbuff[3000];
+	struct header ph;
 	struct pbuff * packet = NULL;
 
-	size_t r = recvfrom(s, inbuff, bs, 0, peer, &ral);
-	if(r < 0) {
+	size_t r = recvfrom(s, inbuff, 3000, 0, peer, &ral);
+	if(r < sizeof(ph)) {
+		if(r < 0 && errno == EAGAIN)
+			return 1;
 		r = errno;
 		log(1, "Error receiving packet from %s: %s",
 				inet_ntoa(peer->s_addr), strerror(r));
 		return -1;
 	}
-	memcpy(&lenfield, inbuff, 2);
-	memcpy(&seqfield, inbuff + 2, 2);
-	memcpy(&pacfield, inbuff + 4, 1);
-	lenfield = ntohs(lenfield);
-	seqfield = ntohs(seqfield);
-	if(pacfield < 0) {
-		if(lenfield > 0) {
-			out->length = lenfield;
-			out->value = malloc(lenfield);
-			memcpy(out->value, inbuff + 5, lenfield);
-		}
-		return abs(pacfield);
-	}
 
-	packet = get_packet(peer, seqfield, lenfield, &bs);
-	if(packet == NULL && lenfield <= bs) {
-		out->length = lenfield;
-		out->value = malloc(lenfield);
-		memcpy(out->value, inbuff + 5, lenfield);
-		free(inbuff);
+	memcpy(&ph, inbuff, sizeof(ph));
+	ph.len = ntohs(ph.len);
+	ph.seq = ntohs(ph.seq);
+	r -= sizeof(ph);
+
+	if(ph.len < r) {
+		if(ph.len > 0) {
+			out->length = ph.len;
+			out->value = malloc(ph.len);
+			memcpy(out->value, inbuff + sizeof(ph), ph.len);
+		}
+		*pacout = pac;
 		return 0;
 	}
 
-	memcpy(packet->buff + (bs * pacfield), inbuf + 5, r - 5);
-	packet->have += r - 5;
-	free(inbuf);
+	packet = get_packet(peer, ph.seq, ph.len, &bs);
+	memcpy(packet->buff + (r * ph.pac), inbuf + sizeof(ph), r);
+	packet->have += r;
 
 	if(packet->have == packet->len) {
 		out->length = packet->len;
@@ -125,48 +154,46 @@ int recv_packet(int s, gss_buffer_desc * out, struct sockaddr_in * peer) {
 }
 
 int send_packet(int s, gss_buffer_desc * out,
-			   struct sockaddr_in * peer, int bs) {
-	char * inbuff = malloc(bs + 5);
+			   struct sockaddr_in * peer, int bs, char pac) {
+	char outbuf[3000];
 	char * lock = out->value;
-	char pac;
-	OM_uint16 seq = get_seq(peer);
-	OM_uint16 left = 0;
-	if(out)
-		left = out->length;
+	struct header ph;
+	memset(&ph, 0, sizeof(ph));
+	ph.seq = get_seq(peer);
+	ph.pac = pac;
+	if(out && out->length)
+		ph.len = out->length;
+	OM_uint16 left = ph.len;
 	size_t r;
 
-	if(out->length)
-		pac = out->length / bs;
-		if(out->length % bs)
-			pac++;
+	if(ph.len)
+		ph.chunk = ph.len / bs;
+		if(ph.len % bs)
+			ph.chunk++;
 	}
-	memcpy(inbuff, &left, 2);
-	memcpy(inbuff + 2, &seq, 2);
-	do {
-		size_t tosend = (left > bs ? bs : left) + 5
-		memcpy(inbuff + 4, &pac, 1);
-		if(left == 0) {
-			r = sendto(s, inbuff, 5, 0, peer, sizeof(struct sockaddr_in));
-			break;
-		}
 
-		memcpy(inbuff + 5, lock, tosend - 5);
-		r = sendto(s, inbuff, tosend, 0, peer, sizeof(struct sockaddr_in));
+	do {
+		size_t tosend = (left > bs ? bs : left);
+		memcpy(outbuf, &ph, sizeof(ph));
+		if(left)
+			memcpy(outbuf + sizeof(ph), lock, tosend);
+
+		r = sendto(s, outbuff, tosend + sizeof(ph), 0, 
+					peer, sizeof(struct sockaddr_in));
 		if(r < 0) {
 			log(1, "Error sending to %s: %s",
-						inet_ntoa(peer->s_addr), strerror(errno));
+					inet_ntoa(peer->s_addr), strerror(errno));
 			break;
-		} else if(r < tosend) {
+		} else if(r < tosend + sizeof(ph)) {
 			log(1, "Sent less than expected to %s: %d < %d",
-						inet_ntoa(peer->s_addr), r, tosend);
+					inet_ntoa(peer->s_addr), r, tosend);
 			break;
 		}
-		left -= r - 5;
-		lock += r - 5;
-		pac--;
-	} while(pac);
+		left -= r - sizeof(ph);
+		lock += r - sizeof(ph);
+		ph.chunk--;
+	} while(ph.chunk);
 
-	free(inbuff);
 	return (r < 0 ? -1 : 0);
 }
 
