@@ -215,23 +215,23 @@ int send_packet(int s, gss_buffer_desc * out,
 	struct header ph;
 	char outbuf[PBUFF_SIZE + sizeof(ph)];
 	memset(&ph, 0, sizeof(ph));
-	ph.seq = get_seq(peer);
+	ph.seq = htons(get_seq(peer));
 	ph.pac = pac;
 	uint16_t sent = 0;
 	uint8_t upto = 0;
 	size_t r;
 
 	if(out && out->length) {
-		ph.len = out->length;
-		upto = ph.len / bs;
-		if(ph.len % bs)
+		ph.len = htons(out->length);
+		upto = out->length / bs;
+		if(out->length % bs)
 			upto++;
 	}
 
 	do {
 		size_t tosend = sizeof(ph);
-		if(ph.len) {
-			uint16_t left = ph.len - sent;
+		if(out && out->length) {
+			uint16_t left = out->length - sent;
 			memcpy(outbuf + sizeof(ph), out->value + (bs * ph.chunk),
 							left < bs ? left : bs);
 			tosend += left < bs ? left : bs;

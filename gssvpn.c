@@ -117,8 +117,8 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	}
 	else if(pac == PAC_NETINIT) {
 		if(crypted.length == sizeof(uint16_t)) {
-			memcpy(&bs, crypted.value, sizeof(uint16_t));
-			gbs = ntohs(bs);
+			memcpy(&gbs, crypted.value, sizeof(uint16_t));
+			gbs = ntohs(gbs);
 			do_gssinit(GSS_C_NO_BUFFER);
 		}
 		else
@@ -156,7 +156,7 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 
-	send_packet(netfd, &crypted, &server, bs, PAC_DATA);
+	send_packet(netfd, &crypted, &server, gbs, PAC_DATA);
 	gss_release_buffer(&min, &crypted);
 	return;
 }
