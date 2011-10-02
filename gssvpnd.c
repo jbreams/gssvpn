@@ -226,7 +226,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 
-	if(client->gssstate == GSS_S_CONTINUE_NEEDED && pac != PAC_GSSINIT) {
+	if(client->gssstate == GSS_S_CONTINUE_NEEDED && pac == PAC_DATA) {
 		send_packet(netfd, NULL, &client->addr, client->bs, PAC_GSSINIT);
 		if(crypted.length)
 			gss_release_buffer(&min, &crypted);
