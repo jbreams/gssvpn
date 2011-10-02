@@ -338,6 +338,9 @@ int main(int argc, char ** argv) {
 	if(netfd < 0)
 		return -1;
 
+	memset(clients_ip, 0, sizeof(struct conn*) * 255);
+	memset(clients_ether, 0, sizeof(struct conn*) * 255);
+
 	loop = ev_default_loop(0);
 	ev_io_init(&netio, netfd_read_cb, netfd, EV_READ);
 	ev_io_start(loop, &netio);
