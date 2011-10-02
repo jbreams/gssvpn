@@ -9,8 +9,8 @@
 #define GSSVPN_SERVER
 #include "gssvpn.h"
 
-extern struct conn ** clients_ip;
-extern struct conn ** clients_ether;
+extern struct conn * clients_ip[255];
+extern struct conn * clients_ether[255];
 extern int verbose;
 
 struct conn * get_conn(struct sockaddr_in * peer) {
