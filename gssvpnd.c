@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <syslog.h>
-#include <ev.h>
+#include <libev/ev.h>
 #define GSSVPN_SERVER
 #include "gssvpn.h"
 
