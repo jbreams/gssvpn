@@ -10,6 +10,7 @@
 #include <gssapi/gssapi.h>
 #include <unistd.h>
 #include <net/if.h>
+#include <netinet/in.h>
 #include <netinet/udp.h>
 #if defined(HAVE_IF_TUN)
 #include <linux/if_tun.h>
@@ -23,10 +24,10 @@
 extern int verbose;
 
 struct header {
-	OM_uint16 len;
-	OM_uint16 seq;
-	unsigned char pac;
-	unsigned char chunk;
+	uint16_t len;
+	uint16_t seq;
+	uint8_t pac;
+	uint8_t chunk;
 };
 
 void log(int level, char * fmt, ...) {
@@ -88,14 +89,14 @@ int open_net(short port) {
 	me.sin_family = AF_INET;
 	me.sin_port = htons(port);
 	me.sin_addr.s_addr = htonl(INADDR_ANY);
-	if(bind(s, &me, sizeof(me)) == -1) {
+	if(bind(s, (struct sockaddr*)&me, sizeof(me)) == -1) {
 		rc = errno;
 		close(s);
 		log(1, "Failed to bind socket to port %d: %s",
 					port, strerror(rc));
 		return -1;
 	}
-
+/*
 	rc = getsockopt(s, SOL_IP, IP_MTU, &maxbuflen, &rc);
 	if(rc < 0) {
 		rc = errno;
@@ -104,23 +105,25 @@ int open_net(short port) {
 		close(s);
 		return -1;
 	}
+*/
 	return s;
 }
 
 int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 		struct sockaddr_in * peer) {
-	socklen_t ral = sizeof(ra);
+	socklen_t ral = sizeof(struct sockaddr_in);
 	char inbuff[3000];
 	struct header ph;
 	struct pbuff * packet = NULL;
 
-	size_t r = recvfrom(s, inbuff, 3000, 0, peer, &ral);
+	size_t r = recvfrom(s, inbuff, 3000, 0,
+					(struct sockaddr*)peer, &ral);
 	if(r < sizeof(ph)) {
 		if(r < 0 && errno == EAGAIN)
 			return 1;
 		r = errno;
 		log(1, "Error receiving packet from %s: %s",
-				inet_ntoa(peer->s_addr), strerror(r));
+				inet_ntoa(peer->sin_addr), strerror(r));
 		return -1;
 	}
 
@@ -135,18 +138,18 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 			out->value = malloc(ph.len);
 			memcpy(out->value, inbuff + sizeof(ph), ph.len);
 		}
-		*pacout = pac;
+		*pacout = ph.pac;
 		return 0;
 	}
 
-	packet = get_packet(peer, ph.seq, ph.len, &bs);
-	memcpy(packet->buff + (r * ph.pac), inbuf + sizeof(ph), r);
+	packet = get_packet(peer, ph.seq, ph.len, NULL);
+	memcpy(packet->buff + (r * ph.pac), inbuff + sizeof(ph), r);
 	packet->have += r;
 
 	if(packet->have == packet->len) {
 		out->length = packet->len;
 		out->value = malloc(packet->len);
-		memcpy(out->value, packet->buf, out->len);
+		memcpy(out->value, packet->buff, out->length);
 		free_packet(packet);
 		return 0;
 	}
@@ -154,7 +157,7 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 }
 
 int send_packet(int s, gss_buffer_desc * out,
-			   struct sockaddr_in * peer, int bs, char pac) {
+		struct sockaddr_in * peer, int bs, char pac) {
 	char outbuf[3000];
 	char * lock = out->value;
 	struct header ph;
@@ -163,10 +166,10 @@ int send_packet(int s, gss_buffer_desc * out,
 	ph.pac = pac;
 	if(out && out->length)
 		ph.len = out->length;
-	OM_uint16 left = ph.len;
+	uint16_t left = ph.len;
 	size_t r;
 
-	if(ph.len)
+	if(ph.len) {
 		ph.chunk = ph.len / bs;
 		if(ph.len % bs)
 			ph.chunk++;
@@ -178,15 +181,15 @@ int send_packet(int s, gss_buffer_desc * out,
 		if(left)
 			memcpy(outbuf + sizeof(ph), lock, tosend);
 
-		r = sendto(s, outbuff, tosend + sizeof(ph), 0, 
-					peer, sizeof(struct sockaddr_in));
+		r = sendto(s, outbuf, tosend + sizeof(ph), 0, 
+					(struct sockaddr*)peer, sizeof(struct sockaddr_in));
 		if(r < 0) {
 			log(1, "Error sending to %s: %s",
-					inet_ntoa(peer->s_addr), strerror(errno));
+					inet_ntoa(peer->sin_addr), strerror(errno));
 			break;
 		} else if(r < tosend + sizeof(ph)) {
 			log(1, "Sent less than expected to %s: %d < %d",
-					inet_ntoa(peer->s_addr), r, tosend);
+					inet_ntoa(peer->sin_addr), r, tosend);
 			break;
 		}
 		left -= r - sizeof(ph);

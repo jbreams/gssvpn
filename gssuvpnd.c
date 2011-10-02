@@ -113,17 +113,17 @@ int process_frame(gss_buffer_desc * plaintext, struct conn * client) {
 void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	char * framebuf = malloc(tapmtu), dstmac[6];
 	size_t size = read(ios->fd, framebuf, tapmtu);
-	gss_buffer_desc plaintext = { framebuf, size };
+	gss_buffer_desc plaintext = { size, framebuf }; 
 	time_t curtime = time(NULL);
 
 	if(size == EAGAIN) {
-		free(tapbuf);
+		free(framebuf);
 		return;
 	}
 
-	memcpy(dst, framebuf + 8, 6);
-	if(memcmp(dst, ether_broadcast, 6) == 0) {
-		char i;
+	memcpy(dstmac, framebuf + 8, 6);
+	if(memcmp(dstmac, ether_broadcast, 6) == 0) {
+		uint8_t i;
 		for(i = 0; i < 255; i++) {
 			struct conn * cur = clients_ether[i];
 			while(cur) {
@@ -136,7 +136,7 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		struct conn * client = get_conn_ether(dstmac); 
 		if(client) {
 			process_frame(&plaintext, client);
-			touched = curtime;
+			client->touched = curtime;
 		}
 	}
 	
@@ -159,7 +159,13 @@ void reap_cb(struct ev_loop *loop, ev_periodic *w, int revents) {
 				unlink_conn(cur, CLIENT_ALL);
 				handle_shutdown(cur);
 				free(cur);
+				if(last)
+					cur = last;
+				else
+					cur = clients_ip[i];
+				continue;
 			}
+			
 			struct pbuff * pb;
 			int j;
 			for(j = 0; j < 255; j++) {
