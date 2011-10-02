@@ -21,15 +21,16 @@
 
 gss_ctx_id_t context;
 OM_uint32 gssstate = GSS_S_CONTINUE_NEEDED;
-int tapfd, netfd, bs = PBUFF_SIZE, reap = 30, verbose = 0;
+int tapfd, netfd, gbs = PBUFF_SIZE + 6, reap = 30, verbose = 0;
 struct sockaddr_in server;
 char * tapdev, *service, *hostname;
 extern struct pbuff * packets[255];
 
 int do_netinit() {
 	struct ifaddrs * ifp, *cifp;
-	char outbuff[6];
+	char outbuff[PBUFF_SIZE + 6];
 	gss_buffer_desc out = { 6, outbuff };
+	int rc;
 	if(getifaddrs(&ifp) < 0) {
 		logit(1, "Error getting list of interfaces %m.");
 		return -1;
@@ -47,8 +48,8 @@ int do_netinit() {
 	memcpy(outbuff, LLADDR(sdl), sdl->sdl_alen);
 	freeifaddrs(ifp);
 
-	bs = send_packet(netfd, &out, &server, bs, PAC_NETINIT);
-	if(bs < 0)
+	rc = send_packet(netfd, &out, &server, PBUFF_SIZE + 6, PAC_NETINIT);
+	if(rc < 0)
 		return -1;
 	return 0;
 }
@@ -81,7 +82,7 @@ int do_gssinit(gss_buffer_desc * in) {
 
 	if(tokenout.length) {
 		int rc;
-		rc = send_packet(netfd, &tokenout, &server, bs, PAC_GSSINIT);
+		rc = send_packet(netfd, &tokenout, &server, gbs, PAC_GSSINIT);
 		gss_release_buffer(&min, &tokenout);
 		if(rc < 0)
 			return -1;
@@ -117,7 +118,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	else if(pac == PAC_NETINIT) {
 		if(crypted.length == sizeof(uint16_t)) {
 			memcpy(&bs, crypted.value, sizeof(uint16_t));
-			bs = ntohs(bs);
+			gbs = ntohs(bs);
 			do_gssinit(GSS_C_NO_BUFFER);
 		}
 		else
