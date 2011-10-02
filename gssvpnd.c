@@ -321,6 +321,9 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 
 int main(int argc, char ** argv) {
 	int rc;
+	ev_periodic reaper;
+	ev_io tapio, netio;
+	struct ev_loop * loop;
 	openlog("gssvpnd", 0, LOG_DAEMON);
 
 	rc = get_server_creds(&srvcreds, "gssvpn");
@@ -335,4 +338,14 @@ int main(int argc, char ** argv) {
 	if(netfd < 0)
 		return -1;
 
+	loop = ev_default_loop(0);
+	ev_io_init(&netio, netfd_read_cb, netfd, EV_READ);
+	ev_io_start(loop, &netio);
+	ev_io_init(&tapio, tapfd_read_cb, tapfd, EV_READ);
+	ev_io_start(loop, &netio);
+	ev_periodic_init(&reaper, reap_cb, 0,
+		reapclients < reappackets ? reapclients:reappackets, 0);
+	ev_periodic_start(loop, &reaper);
+	ev_run(loop, 0);
+	return 0;
 }
