@@ -220,14 +220,16 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	if(!client)
 		return;
 	if(client->bs < 0 && pac != PAC_NETINIT) {
-		send_packet(netfd, NULL, &client->addr, tapmtu, PAC_NETINIT);
-		gss_release_buffer(&min, &crypted);
+		logit(1, "Received packet without a buffer size.");
+		if(crypted.length)
+			gss_release_buffer(&min, &crypted);
 		return;
 	}
 
 	if(client->gssstate == GSS_S_CONTINUE_NEEDED && pac != PAC_GSSINIT) {
-		send_packet(netfd, NULL, &peer, client->bs, PAC_GSSINIT);
-		gss_release_buffer(&min, &crypted);
+		send_packet(netfd, NULL, &client->addr, client->bs, PAC_GSSINIT);
+		if(crypted.length)
+			gss_release_buffer(&min, &crypted);
 		return;
 	}
 
@@ -251,14 +253,18 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	else if(pac == PAC_GSSINIT)
 		handle_gssinit(client, &crypted);
 	else if(pac == PAC_NETINIT) {
+		uint16_t bsout;
+		gss_buffer_desc out = { sizeof(uint16_t), &bsout };
 		unlink_conn(client, CLIENT_ETHERNET);
-		client->bs = crypted.length;
+		client->bs = crypted.length - 6;
 		client->ethernext = NULL;
 		memcpy(client->mac, crypted.value, 6);
 		char eh = hash(client->mac, 6);
 		if(clients_ether[eh])
 			client->ethernext = clients_ether[eh];
 		clients_ether[eh] = client;
+		bsout = htons(client->bs);
+		send_packet(netfd, &out, &client->addr, client->bs, PAC_NETINIT);
 	}
 	else if(pac == PAC_SHUTDOWN)
 		handle_shutdown(client);

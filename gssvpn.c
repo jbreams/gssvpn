@@ -114,8 +114,15 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		gss_release_buffer(&min, &plaintext);
 		return;
 	}
-	else if(pac == PAC_NETINIT)
-		do_netinit();
+	else if(pac == PAC_NETINIT) {
+		if(crypted.length == sizeof(uint16_t)) {
+			memcpy(&bs, crypted.value, sizeof(uint16_t));
+			bs = ntohs(bs);
+			do_gssinit(GSS_C_NO_BUFFER);
+		}
+		else
+			do_netinit();
+	}
 	else if(pac == PAC_GSSINIT)
 		do_gssinit(&crypted);
 	else if(pac == PAC_SHUTDOWN)
