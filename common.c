@@ -27,6 +27,7 @@ struct header {
 	uint16_t len;
 	uint8_t pac;
 };
+char pbuff[65535];
 
 void logit(int level, char * fmt, ...) {
 	int err;
@@ -152,10 +153,8 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 		struct sockaddr_in * peer) {
 	socklen_t ral = sizeof(struct sockaddr_in);
 	struct header ph;
-	char inbuff[PBUFF_SIZE + sizeof(ph)];
-	struct pbuff * pb;
 
-	size_t r = recvfrom(s, inbuff, PBUFF_SIZE + sizeof(ph), 0,
+	size_t r = recvfrom(s, pbuff, sizeof(pbuff), 0,
 					(struct sockaddr*)peer, &ral);
 	if(r < 0 || r < sizeof(ph)) {
 		if(errno == EAGAIN)
@@ -172,7 +171,7 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 	else if(verbose)
 		logit(-1, "Received %d bytes from remote host", r);
 
-	memcpy(&ph, inbuff, sizeof(ph));	
+	memcpy(&ph, pbuff, sizeof(ph));	
 	ph.len = ntohs(ph.len);
 	*pacout = ph.pac;
 
@@ -181,7 +180,7 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 
 	out->value = malloc(ph.len);
 	out->length = ph.len;
-	memcpy(out->value, inbuff + sizeof(ph), ph.len);
+	memcpy(out->value, pbuff + sizeof(ph), ph.len);
 		
 	return 0;
 }
@@ -189,14 +188,13 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 int send_packet(int s, gss_buffer_desc * out,
 		struct sockaddr_in * peer, char pac) {
 	struct header ph;
-	char outbuf[PBUFF_SIZE + sizeof(ph)];
-	size_t sent = 0;
+	size_t sent, tosend = sizeof(ph);
 	ph.pac = pac;
 	if(out && out->length)
 		ph.len = htons(out->length);
 	else {
 		ph.len = 0;
-		sent = sendto(s, &ph, sizeof(ph), 0, (struct sockaddr*)peer,
+		sent = sendto(s, &ph, tosend, 0, (struct sockaddr*)peer,
 			sizeof(struct sockaddr_in));
 		if(sent < 0) {
 			sent = errno;
@@ -207,10 +205,15 @@ int send_packet(int s, gss_buffer_desc * out,
 		return 0;
 	}
 
-	memcpy(outbuf, &ph, sizeof(ph));
-	memcpy(outbuf + sizeof(ph), out->value, out->length);
-	sent = sendto(s, &ph, out->length + sizeof(ph), 0,
-		(struct sockaddr*)peer, sizeof(struct sockaddr_in));
+	if((pac == PAC_GSSINIT || pac == PAC_NETINIT))
+		tosend = sizeof(pbuff);
+	else
+		tosend += out->length;
+
+	memcpy(pbuff, &ph, sizeof(ph));
+	memcpy(pbuff + sizeof(ph), out->value, out->length);
+	sent = sendto(s, pbuff, tosend, 0, (struct sockaddr*)peer,
+		sizeof(struct sockaddr_in));
 	if(sent < 0) {
 		sent = errno;
 		logit(1, "Error sending PH to remote host: %s",
