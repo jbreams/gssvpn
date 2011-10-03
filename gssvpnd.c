@@ -99,7 +99,7 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 
-	memcpy(dstmac, framebuf + 8, 6);
+	memcpy(dstmac, framebuf, 6);
 	if(memcmp(dstmac, ether_broadcast, 6) == 0) {
 		uint8_t i;
 		for(i = 0; i < 255; i++) {
@@ -288,7 +288,7 @@ int main(int argc, char ** argv) {
 	ev_io_init(&netio, netfd_read_cb, netfd, EV_READ);
 	ev_io_start(loop, &netio);
 	ev_io_init(&tapio, tapfd_read_cb, tapfd, EV_READ);
-	ev_io_start(loop, &netio);
+	ev_io_start(loop, &tapio);
 	ev_periodic_init(&reaper, reap_cb, 0, reapclients, 0);
 	ev_periodic_start(loop, &reaper);
 	ev_run(loop, 0);
