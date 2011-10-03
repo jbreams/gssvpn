@@ -169,6 +169,8 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 			return -1;
 		}
 	}
+	else if(verbose)
+		logit(-1, "Received %d bytes from remote host", r);
 
 	memcpy(&ph, inbuff, sizeof(ph));	
 	ph.len = ntohs(ph.len);
@@ -192,7 +194,7 @@ int send_packet(int s, gss_buffer_desc * out,
 	ph.pac = pac;
 	if(out && out->length)
 		ph.len = htons(out->length);
-	else
+	else {
 		ph.len = 0;
 		sent = sendto(s, &ph, sizeof(ph), 0, (struct sockaddr*)peer,
 			sizeof(struct sockaddr_in));
@@ -215,6 +217,8 @@ int send_packet(int s, gss_buffer_desc * out,
 			strerror(sent));
 		return -1;
 	}
+	else if(verbose)
+		logit(-1, "Sent %d bytes to remote host", sent);
 
 	return 0;
 }
