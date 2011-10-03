@@ -65,7 +65,7 @@ void free_packet(struct pbuff * pb) {
 	uint8_t eh, ea[4];
 	memcpy(ea, &pb->ph.len, sizeof(uint16_t));
 	memcpy(ea + sizeof(uint16_t), &pb->ph.seq, sizeof(uint16_t));
-	uint8_t eh = hash(ea, 4);
+	eh = hash(ea, 4);
 	struct pbuff * last = NULL, *cur = packets[eh];
 	while(cur && cur != pb) {
 		last = cur;
@@ -249,8 +249,8 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 
 	pb = get_packet(&ph);
 	size_t tocopy = maxmtu;
-	if(ph->len % maxmtu && (ph->len / maxmtu) + 1 == ph.chunk)
-		tocopy += ph->len % maxmtu;
+	if(ph.len % maxmtu && (ph.len / maxmtu) + 1 == ph.chunk)
+		tocopy += ph.len % maxmtu;
 	else
 		tocopy += maxmtu;
 	memcpy(pb->buff + (maxmtu * ph.chunk), inbuff + sizeof(ph), tocopy);
