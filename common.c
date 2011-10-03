@@ -42,14 +42,17 @@ struct pbuff * packets[255];
 int maxmtu = 1400;
 
 struct pbuff * get_packet(struct header * ph) {
-	uint8_t eh;
+	uint8_t eh, ea[4];
+	memcpy(ea, &ph->len, sizeof(uint16_t));
+	memcpy(ea + sizeof(uint16_t), &ph->seq, sizeof(uint16_t));
 	struct pbuff * pb;
-	eh = hash((uint8_t*)ph, sizeof(*ph) - 1);
+	eh = hash(ea, 4);
 	pb = packets[eh];
 	while(pb && memcmp(ph, &pb->ph, sizeof(*ph) - 1) != 0)
 		pb = pb->next;
 	if(!pb) {
 		pb = malloc(sizeof(struct pbuff));
+		memset(pb, 0, sizeof(struct pbuff));
 		pb->next = packets[eh];
 		packets[eh] = pb;
 		memcpy(&pb->ph, ph, sizeof(*ph));
@@ -59,7 +62,10 @@ struct pbuff * get_packet(struct header * ph) {
 }
 
 void free_packet(struct pbuff * pb) {
-	uint8_t eh = hash((uint8_t*)&pb->ph, sizeof(pb->ph) - 1);
+	uint8_t eh, ea[4];
+	memcpy(ea, &ph->len, sizeof(uint16_t));
+	memcpy(ea + sizeof(uint16_t), &ph->seq, sizeof(uint16_t));
+	uint8_t eh = hash(ea, 4);
 	struct pbuff * last = NULL, *cur = packets[eh];
 	while(cur && cur != pb) {
 		last = cur;
@@ -242,12 +248,17 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 	}
 
 	pb = get_packet(&ph);
-	memcpy(pb->buff + (maxmtu * ph.chunk), inbuff + sizeof(ph),
-		maxmtu);
-	pb->have += maxmtu;
+	size_t tocopy = maxmtu;
+	if(ph->len % maxmtu && (ph->len / maxmtu) + 1 == ph.chunk)
+		tocopy += ph->len % maxmtu;
+	else
+		tocopy += maxmtu;
+	memcpy(pb->buff + (maxmtu * ph.chunk), inbuff + sizeof(ph), tocopy);
+	pb->have += tocopy;
+
 	if(verbose)
-		logit(0, "Received partial packet %d of %d total chunk %d",
-			r - sizeof(ph), ph.len, ph.chunk);
+		logit(0, "Received partial packet %d of %d total - %d:%d",
+			r - sizeof(ph), ph.len, ph.chunk, ph.seq);
 
 	if(pb->have >= ph.len) {
 		out->length = ph.len;
