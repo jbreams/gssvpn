@@ -19,7 +19,7 @@
 #include <ev.h>
 #include "gssvpn.h"
 
-gss_ctx_id_t context;
+gss_ctx_id_t context = GSS_C_NO_CONTEXT;
 OM_uint32 gssstate = GSS_S_CONTINUE_NEEDED;
 int tapfd, netfd, gbs = PBUFF_SIZE + 6, reap = 30, verbose = 0;
 struct sockaddr_in server;
@@ -121,6 +121,8 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 			display_gss_err(maj, min);
 			return;
 		}
+		if(verbose)
+			logit(0, "Writing %d bytes to TAP", plaintext.length);
 
 		write(tapfd, plaintext.value, plaintext.length);
 		gss_release_buffer(&min, &plaintext);
@@ -232,7 +234,7 @@ int main(int argc, char ** argv) {
 	ev_io_init(&tapio, tapfd_read_cb, tapfd, EV_READ);
 	ev_io_start(loop, &tapio);
 
-	if(do_netinit() < 0) {
+	if(do_gssinit(NULL) < 0) {
 		close(tapfd);
 		close(netfd);
 		return -1;

@@ -25,8 +25,58 @@ extern int verbose;
 
 struct header {
 	uint16_t len;
+	uint16_t seq;
 	uint8_t pac;
+	uint8_t chunk;
 };
+
+struct pbuff {
+	char buff[PBUFF_SIZE];
+	struct header ph;
+	uint16_t have;
+	struct pbuff * next;
+};
+
+uint16_t seq = 0;
+struct pbuff * packets[255];
+int maxmtu = 1400;
+
+struct pbuff * get_packet(struct header * ph) {
+	uint8_t eh;
+	struct pbuff * pb;
+	eh = hash((uint8_t*)ph, sizeof(*ph) - 1);
+	pb = packets[eh];
+	while(pb && memcmp(ph, &pb->ph, sizeof(*ph) - 1) != 0)
+		pb = pb->next;
+	if(!pb) {
+		pb = malloc(sizeof(struct pbuff));
+		pb->next = packets[eh];
+		packets[eh] = pb;
+		memcpy(&pb->ph, ph, sizeof(*ph));
+		ph->chunk = 0;
+	}
+	return pb;
+}
+
+void free_packet(struct pbuff * pb) {
+	uint8_t eh = hash((uint8_t*)&pb->ph, sizeof(pb->ph) - 1);
+	struct pbuff * last = NULL, *cur = packets[eh];
+	while(cur && cur != pb) {
+		last = cur;
+		cur = cur->next;
+	}
+
+	if(!cur) {
+		logit(1, "Trying to free orphaned packet");
+		return;
+	}
+
+	if(last)
+		last->next = cur->next;
+	else
+		packets[eh] = cur->next;
+	free(cur);
+}
 
 void logit(int level, char * fmt, ...) {
 	int err;
@@ -153,6 +203,7 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 	socklen_t ral = sizeof(struct sockaddr_in);
 	struct header ph;
 	char inbuff[PBUFF_SIZE + sizeof(ph)];
+	struct pbuff * pb;
 
 	size_t r = recvfrom(s, inbuff, PBUFF_SIZE + sizeof(ph), 0,
 					(struct sockaddr*)peer, &ral);
@@ -171,9 +222,13 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 	memcpy(&ph, inbuff, sizeof(ph));
 	
 	ph.len = ntohs(ph.len);
+	ph.seq = ntohs(ph.seq);
 	*pacout = ph.pac;
 
-	if(ph.len > 0) {
+	if(ph.len == 0)
+		return 0;
+	
+	if(ph.len < maxmtu) {
 		if(r - sizeof(ph) < ph.len) {
 			logit(1, "Payload is smaller than expected");
 			return -1;
@@ -181,36 +236,56 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 		out->length = ph.len;
 		out->value = malloc(ph.len);
 		memcpy(out->value, inbuff + sizeof(ph), out->length);
+		return 0;
 	}
 
-	return 0;
+	pb = get_packet(&ph);
+	memcpy(pb->buff + (maxmtu * ph.chunk), inbuff + sizeof(ph),
+		maxmtu);
+	pb->have += maxmtu;
+
+	if(pb->have >= ph.len) {
+		out->length = ph.len;
+		out->value = malloc(ph.len);
+		memcpy(out->value, pb->buff, ph.len);
+		free_packet(pb);
+		return 0;
+	}
+	
+	return 1;
 }
 
 int send_packet(int s, gss_buffer_desc * out,
 		struct sockaddr_in * peer, char pac) {
 	struct header ph;
 	char outbuf[PBUFF_SIZE + sizeof(ph)];
-	size_t tosend = sizeof(ph);
+	size_t sent = 0;
 	ph.pac = pac;
-	if(out && out->length) {
+	if(out && out->length)
 		ph.len = htons(out->length);
-		memcpy(outbuf + sizeof(ph), out->value, out->length);
-		tosend += out->length;
-	}
 	else
 		ph.len = 0;
-	memcpy(outbuf, &ph, sizeof(ph));
-	size_t sent = sendto(s, outbuf, tosend, 0, (struct sockaddr*)peer,
-			sizeof(struct sockaddr_in));
+	if(ph.len > maxmtu)
+		ph.seq = htons(seq++);
 
-	if(sent < 0) {
-		logit(1, "Error sending packet %s", strerror(errno));
-		return -1;
+	if(!ph.len) {
+		return sendto(s, &ph, sizeof(ph), 0, (struct sockaddr*)peer,
+			sizeof(struct sockaddr_in));
 	}
-	else if(sent < tosend) {
-		logit(1, "Sent less than expected");
-		return -1;
-	}
+
+	do {
+		size_t tocopy = out->length - sent, r;
+		tocopy = tocopy > maxmtu ? maxmtu : tocopy;
+		memcpy(outbuf, &ph, sizeof(ph));
+		memcpy(outbuf + sizeof(ph), out->value + (maxmtu * ph.chunk), tocopy);
+		r = sendto(s, outbuf, tocopy + sizeof(ph), 0, (struct sockaddr*)peer,
+			sizeof(struct sockaddr_in));
+		if(r < 0)
+			return -1;
+		sent += r - sizeof(ph);
+		ph.chunk++;
+	} while(sent < out->length);
+
 	return 0;
 }
 
