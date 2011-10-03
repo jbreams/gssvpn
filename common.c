@@ -267,6 +267,7 @@ int send_packet(int s, gss_buffer_desc * out,
 		ph.len = 0;
 	if(ph.len > maxmtu)
 		ph.seq = htons(seq++);
+	ph.chunk = 0;
 
 	if(!ph.len) {
 		return sendto(s, &ph, sizeof(ph), 0, (struct sockaddr*)peer,
@@ -284,6 +285,9 @@ int send_packet(int s, gss_buffer_desc * out,
 			return -1;
 		sent += r - sizeof(ph);
 		ph.chunk++;
+		if(verbose)
+			logit(0, "Send %d bytes in chunk %d out of %d bytes",
+					r - sizeof(ph), ph.chunk - 1, out->length);
 	} while(sent < out->length);
 
 	return 0;
