@@ -165,9 +165,8 @@ void handle_gssinit(struct conn * client, gss_buffer_desc * intoken) {
 
 	maj = gss_accept_sec_context(&min, &client->context, srvcreds, intoken,
 					NULL, &client_name, &mech, &output, &flags, NULL, NULL);
-	if(maj != GSS_S_COMPLETE || maj != GSS_S_CONTINUE_NEEDED) {
-		logit(1, "Error accepting security context from %s",
-					inet_ntoa(client->addr.sin_addr));
+	if(maj != GSS_S_COMPLETE && maj != GSS_S_CONTINUE_NEEDED) {
+		logit(1, "Error accepting security context from %s", client->ipstr);
 		display_gss_err(maj, min);
 		return;
 	}
@@ -182,11 +181,12 @@ void handle_gssinit(struct conn * client, gss_buffer_desc * intoken) {
 
 	logit(0, "Authenticated connection for %s (%s) from %s",
 					nameout.value, oidout.value,
-					inet_ntoa(client->addr.sin_addr));
+					client->ipstr);
 	gss_release_buffer(&lmin, &nameout);
 	gss_release_buffer(&lmin, &oidout);
 	gss_release_name(&lmin, &client_name);
 	gss_release_oid(&lmin, &mech);
+	send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
 }
 
 void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
@@ -212,7 +212,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 
-	if(memcmp(client->mac, ethempty, sizeof(ethempty)) == 0) {
+	if(pac == PAC_DATA && memcmp(client->mac, ethempty, sizeof(ethempty)) == 0) {
 		send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
 		if(crypted.length)
 			gss_release_buffer(&min, &crypted);
@@ -234,9 +234,9 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 
 		if(pac == PAC_NETINIT) {
 			uint8_t eh;
-			if(crypted.length != sizeof(client->mac)) {
-				if(crypted.value)
-					gss_release_buffer(&min, &crypted);
+			if(plaintext.length != sizeof(client->mac)) {
+				if(plaintext.value)
+					gss_release_buffer(&min, &plaintext);
 				logit(1, "Invalid netinit packet received");
 			}
 			memcpy(client->mac, plaintext.value, sizeof(client->mac));

@@ -16,11 +16,9 @@ struct conn {
 	gss_ctx_id_t context;
 	unsigned long gssstate;
 	struct sockaddr_in addr;
-	unsigned int seq;
-	int bs;
+	char ipstr[20];
 	unsigned char mac[6];
 	time_t touched;
-	struct pbuff * packets[255];
 	struct conn * ipnext;
 	struct conn * ethernext;
 };

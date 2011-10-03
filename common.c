@@ -32,16 +32,13 @@ void logit(int level, char * fmt, ...) {
 	int err;
 	va_list ap;
 	
-	va_start(ap, fmt);
 	if(level = 0)
 		err = LOG_INFO;
 	else if(level == -1)
 		err = LOG_DEBUG;
 	else
 		err = LOG_ERR;
-#ifndef DARWIN
-//	syslogv(err, fmt, ap);
-#endif
+	va_start(ap, fmt);
 	vfprintf(stderr, fmt, ap); 
 	fprintf(stderr, "\n");
 	va_end(ap);
