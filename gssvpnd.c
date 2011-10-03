@@ -15,7 +15,11 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <syslog.h>
+#ifdef DARWIN
+#include <ev.h>
+#else
 #include <libev/ev.h>
+#endif
 #define GSSVPN_SERVER
 #include "gssvpn.h"
 
@@ -28,7 +32,6 @@ int reapclients = 36000;
 
 int tapfd, netfd;
 const uint8_t ether_broadcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-const uint8_t ether_empty[6] = { 0, 0, 0, 0, 0, 0 };
 
 int get_server_creds(gss_cred_id_t * sco, char * service_name) {
 	gss_buffer_desc name_buff;
@@ -68,7 +71,7 @@ int process_frame(gss_buffer_desc * plaintext, struct conn * client) {
 		return -1;
 	}
 
-	rc = send_packet(netfd, &crypted, &client->addr, client->bs, PAC_DATA);
+	rc = send_packet(netfd, &crypted, &client->addr, PAC_DATA);
 	gss_release_buffer(&min, &crypted);
 	return rc;
 }
@@ -134,7 +137,7 @@ void reap_cb(struct ev_loop *loop, ev_periodic *w, int revents) {
 		struct conn * cur = clients_ip[i], * last = NULL;
 		while(cur != NULL) {
 			if(curtime - cur->touched >= reapclients) {
-				struct conn * save = cur->next;
+				struct conn * save = cur->ipnext;
 				send_packet(netfd, NULL, &cur->addr, PAC_SHUTDOWN);
 				unlink_conn(cur, CLIENT_ALL);
 				handle_shutdown(cur);
@@ -170,11 +173,9 @@ void handle_gssinit(struct conn * client, gss_buffer_desc * intoken) {
 	}
 	client->gssstate = maj;
 	if(maj == GSS_S_CONTINUE_NEEDED) {
-		send_packet(netfd, &output, &client->addr, client->bs, PAC_GSSINIT);
+		send_packet(netfd, &output, &client->addr, PAC_GSSINIT);
 		return;
 	}
-	
-	send_packet(netfd, NULL, &client->addr, client->bs, PAC_NOOP);
 	
 	gss_display_name(&lmin, client_name, &nameout, NULL);
 	gss_oid_to_str(&lmin, mech, &oidout);
@@ -195,22 +196,23 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	int rc = recv_packet(netfd, &crypted, &pac, &peer);
 	OM_uint32 maj, min;
 	struct conn * client;
+	const uint8_t ethempty[6] = { 0, 0, 0, 0, 0, 0 };
 
-	if(rc == 1)
+	if(rc != 0)
 		return;
 
 	client = get_conn(&peer);
 	if(!client)
 		return;
 
-	if(client->gssstate == GSS_S_CONTINUE_NEEDED && pac != PAC_GSSINIT)
+	if(client->gssstate == GSS_S_CONTINUE_NEEDED && pac != PAC_GSSINIT) {
 		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT);
 		if(crypted.length)
 			gss_release_buffer(&min, &crypted);
 		return;
 	}
 
-	if(memcmpy(client->mac, ether_empty) == 0) {
+	if(memcmp(client->mac, ethempty, sizeof(ethempty)) == 0) {
 		send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
 		if(crypted.length)
 			gss_release_buffer(&min, &crypted);
@@ -240,7 +242,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 			memcpy(client->mac, plaintext.value, sizeof(client->mac));
 			gss_release_buffer(&min, &plaintext);
 			unlink_conn(client, CLIENT_ETHERNET);
-			eh = hash(client->mac, sizeof(client->mac);
+			eh = hash(client->mac, sizeof(client->mac));
 			client->ethernext = clients_ether[eh];
 			clients_ether[eh] = client;
 			send_packet(netfd, NULL, &client->addr, PAC_NOOP);
@@ -287,8 +289,7 @@ int main(int argc, char ** argv) {
 	ev_io_start(loop, &netio);
 	ev_io_init(&tapio, tapfd_read_cb, tapfd, EV_READ);
 	ev_io_start(loop, &netio);
-	ev_periodic_init(&reaper, reap_cb, 0,
-		reapclients < reappackets ? reapclients:reappackets, 0);
+	ev_periodic_init(&reaper, reap_cb, 0, reapclients, 0);
 	ev_periodic_start(loop, &reaper);
 	ev_run(loop, 0);
 
