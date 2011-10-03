@@ -63,8 +63,8 @@ struct pbuff * get_packet(struct header * ph) {
 
 void free_packet(struct pbuff * pb) {
 	uint8_t eh, ea[4];
-	memcpy(ea, &ph->len, sizeof(uint16_t));
-	memcpy(ea + sizeof(uint16_t), &ph->seq, sizeof(uint16_t));
+	memcpy(ea, &pb->ph.len, sizeof(uint16_t));
+	memcpy(ea + sizeof(uint16_t), &pb->ph.seq, sizeof(uint16_t));
 	uint8_t eh = hash(ea, 4);
 	struct pbuff * last = NULL, *cur = packets[eh];
 	while(cur && cur != pb) {
