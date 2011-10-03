@@ -109,7 +109,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	struct sockaddr_in peer;
 
 	rc = recv_packet(netfd, &crypted, &pac, &peer);
-	if(rc < 0 || rc == 1)
+	if(rc != 0)
 		return;
 	
 	if(pac == PAC_DATA) {

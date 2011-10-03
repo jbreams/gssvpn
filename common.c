@@ -248,17 +248,9 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 	}
 
 	pb = get_packet(&ph);
-	size_t tocopy = maxmtu;
-	if(ph.len % maxmtu && (ph.len / maxmtu) + 1 == ph.chunk)
-		tocopy += ph.len % maxmtu;
-	else
-		tocopy += maxmtu;
+	size_t tocopy = r - sizeof(ph);
 	memcpy(pb->buff + (maxmtu * ph.chunk), inbuff + sizeof(ph), tocopy);
 	pb->have += tocopy;
-
-	if(verbose)
-		logit(0, "Received partial packet %d of %d total - %d:%d",
-			r - sizeof(ph), ph.len, ph.chunk, ph.seq);
 
 	if(pb->have >= ph.len) {
 		out->length = ph.len;
@@ -267,6 +259,10 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 		free_packet(pb);
 		return 0;
 	}
+
+	if(verbose)
+		logit(0, "Received partial %d packet %d of %d total - %d:%d %p",
+			r - sizeof(ph), pb->have, ph.len, ph.chunk, ph.seq, pb);
 	
 	return 1;
 }
@@ -297,8 +293,9 @@ int send_packet(int s, gss_buffer_desc * out,
 		memcpy(outbuf + sizeof(ph), out->value + (maxmtu * ph.chunk), tocopy);
 		r = sendto(s, outbuf, tocopy + sizeof(ph), 0, (struct sockaddr*)peer,
 			sizeof(struct sockaddr_in));
-		if(r < 0)
+		if(r < 0) {
 			return -1;
+		}
 		sent += r - sizeof(ph);
 		ph.chunk++;
 		if(verbose)
