@@ -236,6 +236,8 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 		out->length = ph.len;
 		out->value = malloc(ph.len);
 		memcpy(out->value, inbuff + sizeof(ph), out->length);
+		if(verbose)
+			logit(0, "Received packet of %d bytes", out->length);
 		return 0;
 	}
 
@@ -243,6 +245,9 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 	memcpy(pb->buff + (maxmtu * ph.chunk), inbuff + sizeof(ph),
 		maxmtu);
 	pb->have += maxmtu;
+	if(verbose)
+		logit(0, "Received partial packet %d of %d total chunk %d",
+			r - sizeof(ph), ph.len, ph.chunk);
 
 	if(pb->have >= ph.len) {
 		out->length = ph.len;
@@ -267,6 +272,7 @@ int send_packet(int s, gss_buffer_desc * out,
 		ph.len = 0;
 	if(ph.len > maxmtu)
 		ph.seq = htons(seq++);
+	ph.chunk = 0;
 
 	if(!ph.len) {
 		return sendto(s, &ph, sizeof(ph), 0, (struct sockaddr*)peer,
