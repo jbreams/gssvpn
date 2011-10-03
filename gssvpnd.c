@@ -27,7 +27,7 @@ struct conn * clients_ip[255];
 struct conn * clients_ether[255];
 gss_cred_id_t srvcreds;
 int tapmtu = 1500;
-int verbose = 0;
+int verbose = 1;
 int reapclients = 36000;
 
 int tapfd, netfd;
@@ -66,7 +66,7 @@ int process_frame(gss_buffer_desc * plaintext, struct conn * client) {
 	maj = gss_wrap(&min, client->context, 1, GSS_C_QOP_DEFAULT, plaintext,
 					&confstate, &crypted);
 	if(maj != GSS_S_COMPLETE) {
-		logit(1, "Error wrapping packet for %s", inet_ntoa(client->addr.sin_addr));
+		logit(1, "Error wrapping packet for %s", client->ipstr);
 		display_gss_err(maj, min);
 		return -1;
 	}
@@ -226,7 +226,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 					&plaintext, NULL, NULL);
 		if(maj != GSS_S_COMPLETE) {
 			logit(1, "Error unwrapping packet from %s",
-					inet_ntoa(peer.sin_addr));
+					client->ipstr);
 			display_gss_err(maj, min);
 			gss_release_buffer(&min, &crypted);
 			return;
