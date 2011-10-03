@@ -28,9 +28,12 @@ extern struct pbuff * packets[255];
 
 int do_netinit() {
 	struct ifaddrs * ifp, *cifp;
-	char outbuff[PBUFF_SIZE + 6];
-	gss_buffer_desc out = { PBUFF_SIZE + 6, outbuff };
+	char mac[6];
+	OM_uint32 maj, min, confstate;
+	gss_buffer_desc crypted = GSS_C_EMPTY_BUFFER;
+	gss_buffer_desc plaintext = { sizeof(mac), mac };
 	int rc;
+
 	if(getifaddrs(&ifp) < 0) {
 		logit(1, "Error getting list of interfaces %m.");
 		return -1;
@@ -45,13 +48,19 @@ int do_netinit() {
 	}
 
 	struct sockaddr_dl* sdl = (struct sockaddr_dl*)cifp->ifa_addr;
-	memcpy(outbuff, LLADDR(sdl), sdl->sdl_alen);
+	memcpy(mac, LLADDR(sdl), sizeof(mac));
 	freeifaddrs(ifp);
 
-	rc = send_packet(netfd, &out, &server, PBUFF_SIZE + 6, PAC_NETINIT);
-	if(rc < 0)
-		return -1;
-	return 0;
+	maj = gss_wrap(&min, context, 1, GSS_C_QOP_DEFAULT, &plaintext,
+					&confstate, &crypted);
+	if(maj != GSS_S_COMPLETE) {
+		logit(1, "Error while wrapping netinit response");
+		display_gss_err(maj, min);
+	}
+
+	rc = send_packet(netfd, &crypted, &server, PAC_NETINIT);
+	gss_release_buffer(&min, &crypted);
+	return rc;
 }
 
 int do_gssinit(gss_buffer_desc * in) {
@@ -84,7 +93,7 @@ int do_gssinit(gss_buffer_desc * in) {
 
 	if(tokenout.length) {
 		int rc;
-		rc = send_packet(netfd, &tokenout, &server, gbs, PAC_GSSINIT);
+		rc = send_packet(netfd, &tokenout, &server, PAC_GSSINIT);
 		gss_release_buffer(&min, &tokenout);
 		if(rc < 0)
 			return -1;
@@ -118,13 +127,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 	else if(pac == PAC_NETINIT) {
-		if(crypted.length == sizeof(uint16_t)) {
-			memcpy(&gbs, crypted.value, sizeof(uint16_t));
-			gbs = ntohs(gbs);
-			do_gssinit(GSS_C_NO_BUFFER);
-		}
-		else
-			do_netinit();
+		do_netinit();
 	}
 	else if(pac == PAC_GSSINIT)
 		do_gssinit(&crypted);
@@ -139,12 +142,11 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	gss_buffer_desc plaintext = { PBUFF_SIZE, inbuff };
 	gss_buffer_desc crypted;
 	OM_uint32 maj, min;
-	int rc;
 
 	plaintext.length = read(tapfd, inbuff, PBUFF_SIZE);
 	if(plaintext.length < 0) {
 		logit(1, "Error receiving packet from TAP: %s",
-						strerror(errno));
+					strerror(errno));
 		return;
 	}
 	else if(verbose)
@@ -158,31 +160,13 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 
-	send_packet(netfd, &crypted, &server, gbs, PAC_DATA);
+	send_packet(netfd, &crypted, &server, PAC_DATA);
 	gss_release_buffer(&min, &crypted);
 	return;
 }
 
-void reap_cb(struct ev_loop * loop, ev_periodic * ios, int revents) {
-	uint8_t i;
-	time_t curtime = time(NULL);
-	for(i = 0; i < 255; i++) {
-		struct pbuff * cur = packets[i];
-		while(cur != NULL) {
-			if(curtime - cur->touched >= reap) {
-				struct pbuff * save = cur->next;
-				free_packet(cur);
-				cur = save;
-				continue;
-			}
-			cur = cur->next;
-		}
-	}
-}
-
 int main(int argc, char ** argv) {
 	ev_io tapio, netio;
-	ev_periodic reaper;
 	struct ev_loop * loop;
 	char ch;
 	short port = 0;
@@ -190,7 +174,6 @@ int main(int argc, char ** argv) {
 	OM_uint32 min;
 
 	memset(&server, 0, sizeof(struct sockaddr_in));
-	memset(packets, 0, sizeof(packets));
 	
 	while((ch = getopt(argc, argv, "vh:p:s:d:")) != -1) {
 		switch(ch) {
@@ -248,8 +231,6 @@ int main(int argc, char ** argv) {
 	ev_io_start(loop, &netio);
 	ev_io_init(&tapio, tapfd_read_cb, tapfd, EV_READ);
 	ev_io_start(loop, &tapio);
-	ev_periodic_init(&reaper, reap_cb, 0, reap, 0);
-	ev_periodic_start(loop, &reaper);
 
 	if(do_netinit() < 0) {
 		close(tapfd);

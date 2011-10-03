@@ -25,9 +25,7 @@ extern int verbose;
 
 struct header {
 	uint16_t len;
-	uint16_t seq;
 	uint8_t pac;
-	uint8_t chunk;
 };
 
 void logit(int level, char * fmt, ...) {
@@ -149,16 +147,7 @@ int open_net(short port) {
 					port, strerror(rc));
 		return -1;
 	}
-/*
-	rc = getsockopt(s, SOL_IP, IP_MTU, &maxbuflen, &rc);
-	if(rc < 0) {
-		rc = errno;
-		logit(1, "Error getting MTU from UDP socket: %s",
-					strerror(rc));
-		close(s);
-		return -1;
-	}
-*/
+
 	return s;
 }
 
@@ -167,91 +156,65 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 	socklen_t ral = sizeof(struct sockaddr_in);
 	struct header ph;
 	char inbuff[PBUFF_SIZE + sizeof(ph)];
-	struct pbuff * packet = NULL;
 
 	size_t r = recvfrom(s, inbuff, PBUFF_SIZE + sizeof(ph), 0,
 					(struct sockaddr*)peer, &ral);
-	if(r < sizeof(ph)) {
-		if(r < 0 && errno == EAGAIN)
+	if(r < 0 || r < sizeof(ph)) {
+		if(errno == EAGAIN)
 			return 1;
-		r = errno;
-		logit(1, "Error receiving packet from %s: %s",
-				inet_ntoa(peer->sin_addr), strerror(r));
-		return -1;
-	}
-
-	memcpy(&ph, inbuff, sizeof(ph));
-	ph.len = ntohs(ph.len);
-	ph.seq = ntohs(ph.seq);
-	r -= sizeof(ph);
-
-	if(ph.len < r || ph.pac == PAC_NETINIT || ph.pac == PAC_NOOP) {
-		if(ph.len > r)
-			ph.len = r;
-		if(ph.len > 0) {
-			out->length = ph.len;
-			out->value = malloc(ph.len);
-			memcpy(out->value, inbuff + sizeof(ph), ph.len);
+		if(r < 0) {
+			logit(1, "Error receiving packet %s", strerror(errno));
+			return -1;
 		}
-		*pacout = ph.pac;
-		return 0;
+		if(r < sizeof(ph)) {
+			logit(1, "Packet is smaller than a header");
+			return -1;
+		}
+	}
+	memcpy(&ph, inbuff, sizeof(ph));
+	
+	ph.len = ntohs(ph.len);
+	*pacout = ph.pac;
+
+	if(ph.len > 0) {
+		if(r - sizeof(ph) < ph.len) {
+			logit(1, "Payload is smaller than expected");
+			return -1;
+		}
+		out->length = ph.len;
+		out->value = malloc(ph.len);
+		memcpy(out->value, inbuff + sizeof(ph), out->length);
 	}
 
-	packet = get_packet(peer, ph.seq, ph.len, NULL);
-	memcpy(packet->buff + (r * ph.pac), inbuff + sizeof(ph), r);
-	packet->have += r;
-
-	if(packet->have == packet->len) {
-		out->length = packet->len;
-		out->value = malloc(packet->len);
-		memcpy(out->value, packet->buff, out->length);
-		free_packet(packet);
-		return 0;
-	}
-	packet->touched = time(NULL);
-	return 1;
+	return 0;
 }
 
 int send_packet(int s, gss_buffer_desc * out,
-		struct sockaddr_in * peer, int bs, char pac) {
+		struct sockaddr_in * peer, char pac) {
 	struct header ph;
 	char outbuf[PBUFF_SIZE + sizeof(ph)];
-	memset(&ph, 0, sizeof(ph));
-	ph.seq = htons(get_seq(peer));
+	size_t tosend = sizeof(ph);
 	ph.pac = pac;
-	uint16_t sent = 0;
-	uint8_t upto = 0;
-	size_t r;
-
 	if(out && out->length) {
 		ph.len = htons(out->length);
-		upto = out->length / bs;
-		if(out->length % bs)
-			upto++;
+		memcpy(outbuf + sizeof(ph), out->value, out->length);
+		tosend += out->length;
 	}
+	else
+		ph.len = 0;
+	memcpy(outbuf, &ph, sizeof(ph));
+	size_t sent = sendto(s, outbuf, tosend, 0, (struct sockaddr*)peer,
+			sizeof(struct sockaddr_in));
 
-	do {
-		size_t tosend = sizeof(ph);
-		if(out && out->length) {
-			uint16_t left = out->length - sent;
-			memcpy(outbuf + sizeof(ph), out->value + (bs * ph.chunk),
-							left < bs ? left : bs);
-			tosend += left < bs ? left : bs;
-		}
-		memcpy(outbuf, &ph, sizeof(ph));
-
-		r = sendto(s, outbuf, tosend, 0, 
-					(struct sockaddr*)peer, sizeof(struct sockaddr_in));
-		if(r < 0) {
-			logit(1, "Error sending to %s: %s",
-					inet_ntoa(peer->sin_addr), strerror(errno));
-			break;
-		}
-		ph.chunk++;
-		sent += r - sizeof(ph);
-	} while(upto && ph.chunk <= upto);
-
-	return (r < 0 ? -1 : 0);
+	if(sent < 0) {
+		logit(1, "Error sending packet %s", strerror(errno));
+		return -1;
+	}
+	else if(sent < tosend) {
+		logit(1, "Sent less than expected");
+		return -1;
+	}
+	return 0;
 }
 
 void gss_disp_loop(OM_uint32 status, OM_uint32 type) {

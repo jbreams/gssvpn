@@ -25,10 +25,10 @@ gss_cred_id_t srvcreds;
 int tapmtu = 1500;
 int verbose = 0;
 int reapclients = 36000;
-int reappackets = 30;
 
 int tapfd, netfd;
-const char ether_broadcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+const uint8_t ether_broadcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+const uint8_t ether_empty[6] = { 0, 0, 0, 0, 0, 0 };
 
 int get_server_creds(gss_cred_id_t * sco, char * service_name) {
 	gss_buffer_desc name_buff;
@@ -82,14 +82,6 @@ void handle_shutdown(struct conn * client) {
 	if(client->context != GSS_C_NO_CONTEXT)
 		gss_delete_sec_context(&min, &client->context, NULL); 
 
-	for(i = 0; i < 255; i++) {
-		cp = client->packets[i];
-		while(cp) {
-			struct pbuff * next = cp->next;
-			free(cp);
-			cp = next;
-		}
-	}
 	free(client);
 }
 
@@ -142,24 +134,15 @@ void reap_cb(struct ev_loop *loop, ev_periodic *w, int revents) {
 		struct conn * cur = clients_ip[i], * last = NULL;
 		while(cur != NULL) {
 			if(curtime - cur->touched >= reapclients) {
+				struct conn * save = cur->next;
+				send_packet(netfd, NULL, &cur->addr, PAC_SHUTDOWN);
 				unlink_conn(cur, CLIENT_ALL);
 				handle_shutdown(cur);
 				free(cur);
-				if(last)
-					cur = last;
-				else
-					cur = clients_ip[i];
+				cur = save;
 				continue;
 			}
-			
-			struct pbuff * pb;
-			int j;
-			for(j = 0; j < 255; j++) {
-				for(pb = cur->packets[j]; pb != NULL; pb = pb->next) {
-					if(curtime - pb->touched >= reappackets)
-						free_packet(pb);
-				}
-			}
+
 			last = cur;
 			cur = cur->ipnext;
 		}
@@ -219,21 +202,22 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	client = get_conn(&peer);
 	if(!client)
 		return;
-	if(client->bs < 0 && pac != PAC_NETINIT) {
-		logit(1, "Received packet without a buffer size.");
+
+	if(client->gssstate == GSS_S_CONTINUE_NEEDED && pac != PAC_GSSINIT)
+		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT);
 		if(crypted.length)
 			gss_release_buffer(&min, &crypted);
 		return;
 	}
 
-	if(client->gssstate == GSS_S_CONTINUE_NEEDED && pac == PAC_DATA) {
-		send_packet(netfd, NULL, &client->addr, client->bs, PAC_GSSINIT);
+	if(memcmpy(client->mac, ether_empty) == 0) {
+		send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
 		if(crypted.length)
 			gss_release_buffer(&min, &crypted);
 		return;
 	}
 
-	if(pac == PAC_DATA) {
+	if(pac == PAC_DATA || pac == PAC_NETINIT) {
 		gss_buffer_desc plaintext;
 
 		maj = gss_unwrap(&min, client->context, &crypted,
@@ -245,24 +229,29 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 			gss_release_buffer(&min, &crypted);
 			return;
 		}
-		if(plaintext.length > 0) {
+
+		if(pac == PAC_NETINIT) {
+			uint8_t eh;
+			if(crypted.length != sizeof(client->mac)) {
+				if(crypted.value)
+					gss_release_buffer(&min, &crypted);
+				logit(1, "Invalid netinit packet received");
+			}
+			memcpy(client->mac, plaintext.value, sizeof(client->mac));
+			gss_release_buffer(&min, &plaintext);
+			unlink_conn(client, CLIENT_ETHERNET);
+			eh = hash(client->mac, sizeof(client->mac);
+			client->ethernext = clients_ether[eh];
+			clients_ether[eh] = client;
+			send_packet(netfd, NULL, &client->addr, PAC_NOOP);
+		}
+		else if(plaintext.length > 0) {
 			write(tapfd, plaintext.value, plaintext.length);
 			gss_release_buffer(&min, &plaintext);
 		}
 	}
 	else if(pac == PAC_GSSINIT)
 		handle_gssinit(client, &crypted);
-	else if(pac == PAC_NETINIT) {
-		unlink_conn(client, CLIENT_ETHERNET);
-		client->bs = crypted.length - 6;
-		client->ethernext = NULL;
-		memcpy(client->mac, crypted.value, 6);
-		char eh = hash(client->mac, 6);
-		if(clients_ether[eh])
-			client->ethernext = clients_ether[eh];
-		clients_ether[eh] = client;
-		send_packet(netfd, &out, &client->addr, client->bs, PAC_NETINIT);
-	}
 	else if(pac == PAC_SHUTDOWN)
 		handle_shutdown(client);
 
