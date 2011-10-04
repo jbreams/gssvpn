@@ -19,6 +19,9 @@
 #include <errno.h>
 #include <syslog.h>
 #include <stdarg.h>
+#ifdef HAVE_ZLIB_H
+#include <zlib.h>
+#endif
 #include "gssvpn.h"
 
 extern int verbose;
@@ -185,8 +188,12 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 
 	out->value = malloc(ph.len);
 	out->length = ph.len;
+#ifdef HAVE_ZLIB_H
+	uncompress(out->value, &ph.len, pbuff, r - sizeof(ph));
+#else
 	memcpy(out->value, pbuff + sizeof(ph), ph.len);
-		
+#endif	
+	
 	return 0;
 }
 
@@ -222,7 +229,12 @@ int send_packet(int s, gss_buffer_desc * out,
 		tosend += out->length;
 
 	memcpy(pbuff, &ph, sizeof(ph));
+#ifdef HAVE_ZLIB_H
+	uint32_t destLen;
+	compress(pbuff + sizeof(ph), &destLen, out->value, out->length);
+#else 
 	memcpy(pbuff + sizeof(ph), out->value, out->length);
+#endif
 	sent = sendto(s, pbuff, tosend, 0, (struct sockaddr*)peer,
 		sizeof(struct sockaddr_in));
 	if(sent < 0) {
