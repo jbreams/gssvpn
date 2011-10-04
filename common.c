@@ -27,7 +27,8 @@ struct header {
 	uint16_t len;
 	uint8_t pac;
 };
-char pbuff[65535];
+char pbuff[8192];
+int maxmtu = 8192;
 
 void logit(int level, char * fmt, ...) {
 	int err;
@@ -146,6 +147,10 @@ int open_net(short port) {
 		return -1;
 	}
 
+#ifdef HAVE_IP_MTU_DISCOVER
+	rc = IP_PMTUDISC_DO;
+	setsockopt(s, IPPROTO_UDP, IP_MTU_DISCOVER, &rc, sizeof(int));
+#endif
 	return s;
 }
 
@@ -205,8 +210,14 @@ int send_packet(int s, gss_buffer_desc * out,
 		return 0;
 	}
 
+	if(out->length > maxmtu) {
+		logit(1, "Cannot send packet of %d bytes larger than MTU of %d",
+			out->length, maxmtu);
+		return -1;
+	}
+
 	if((pac == PAC_GSSINIT || pac == PAC_NETINIT))
-		tosend = sizeof(pbuff);
+		tosend = maxmtu;
 	else
 		tosend += out->length;
 
@@ -215,6 +226,13 @@ int send_packet(int s, gss_buffer_desc * out,
 	sent = sendto(s, pbuff, tosend, 0, (struct sockaddr*)peer,
 		sizeof(struct sockaddr_in));
 	if(sent < 0) {
+		while(errno == EMSGSIZE) {
+			maxmtu -= 28;
+			if(verbose)
+				logit(-1, "Reducing MTU to %d", maxmtu);
+			sent = sendto(s, pbuff, tosend, 0,
+				(struct sockaddr*)peer, sizeof(struct sockaddr_in));
+		}
 		sent = errno;
 		logit(1, "Error sending PH to remote host: %s",
 			strerror(sent));
