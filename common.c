@@ -201,9 +201,9 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 	out->value = malloc(ph.len);
 	out->length = ph.len;
 #ifdef HAVE_LZO_H
-	size_t outlen;
+	size_t outlen = out->length;
 	lzo1x_decompress(pbuff + sizeof(ph), r - sizeof(ph),
-		out->value, &outlen, NULL); 
+		out->value, &outlen, lzowrk); 
 #else
 	memcpy(out->value, pbuff + sizeof(ph), ph.len);
 #endif	
@@ -239,25 +239,20 @@ int send_packet(int s, gss_buffer_desc * out,
 
 
 	memcpy(pbuff, &ph, sizeof(ph));
-	if((pac == PAC_GSSINIT || pac == PAC_NETINIT))
-		tosend = maxmtu;
 #ifdef HAVE_LZO_H
-	else {
-		size_t outlen;
-		int rc = lzo1x_1_compress(out->value, out->length,
-			pbuff + sizeof(ph), &outlen, lzowrk);
-		if(rc != 0) {
-			logit(1, "Error compressing packet: %d", rc);
-			return -1;
-		}
-		tosend += outlen;
-#else
-	else {
-		tosend += out->length;
-		memcpy(pbuff + sizeof(ph), out->value, out->length);
-
-#endif
+	size_t outlen;
+	int rc = lzo1x_1_compress(out->value, out->length,
+		pbuff + sizeof(ph), &outlen, lzowrk);
+	if(rc != 0) {
+		logit(1, "Error compressing packet: %d", rc);
+		return -1;
 	}
+	tosend += outlen;
+#else
+	tosend += out->length;
+	memcpy(pbuff + sizeof(ph), out->value, out->length);
+#endif
+	
 	sent = sendto(s, pbuff, tosend, 0, (struct sockaddr*)peer,
 		sizeof(struct sockaddr_in));
 	if(sent < 0) {
