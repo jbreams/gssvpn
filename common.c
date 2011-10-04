@@ -19,8 +19,9 @@
 #include <errno.h>
 #include <syslog.h>
 #include <stdarg.h>
-#ifdef HAVE_ZLIB_H
-#include <zlib.h>
+#ifdef HAVE_LZO_H
+#include <lzo/lzo1x.h>
+#include <lzo/lzoconf.h>
 #endif
 #include "gssvpn.h"
 
@@ -32,6 +33,9 @@ struct header {
 };
 char pbuff[8192];
 int maxmtu = 8192;
+#ifdef HAVE_LZO_H
+uint8_t lzowrk[LZO1X_1_MEM_COMPRESS];
+#endif
 
 void logit(int level, char * fmt, ...) {
 	int err;
@@ -131,6 +135,13 @@ int open_net(short port) {
 	struct sockaddr_in me;
 	int s, rc;
 
+#ifdef HAVE_LZO_H
+	if(lzo_init() != LZO_E_OK) {
+		logit(1, "Error initialzing LZO library.");
+		return -1;
+	}
+#endif
+
 	s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if(s < 0) {
 		rc = errno;
@@ -154,6 +165,7 @@ int open_net(short port) {
 	rc = IP_PMTUDISC_DO;
 	setsockopt(s, IPPROTO_UDP, IP_MTU_DISCOVER, &rc, sizeof(int));
 #endif
+
 	return s;
 }
 
@@ -188,8 +200,10 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 
 	out->value = malloc(ph.len);
 	out->length = ph.len;
-#ifdef HAVE_ZLIB_H
-	uncompress(out->value, &ph.len, pbuff, r - sizeof(ph));
+#ifdef HAVE_LZO_H
+	size_t outlen;
+	lzo1x_decompress(pbuff + sizeof(ph), r - sizeof(ph),
+		out->value, &outlen, NULL); 
 #else
 	memcpy(out->value, pbuff + sizeof(ph), ph.len);
 #endif	
@@ -223,19 +237,27 @@ int send_packet(int s, gss_buffer_desc * out,
 		return -1;
 	}
 
-	if((pac == PAC_GSSINIT || pac == PAC_NETINIT))
-		tosend = maxmtu;
-	else
-		tosend += out->length;
 
 	memcpy(pbuff, &ph, sizeof(ph));
-#ifdef HAVE_ZLIB_H
-	compress(pbuff + sizeof(ph), &tosend, out->value, out->length);
-	if(tosend < maxmtu)
-		tosend += sizeof(ph);
-#else 
-	memcpy(pbuff + sizeof(ph), out->value, out->length);
+	if((pac == PAC_GSSINIT || pac == PAC_NETINIT))
+		tosend = maxmtu;
+#ifdef HAVE_LZO_H
+	else {
+		size_t outlen;
+		int rc = lzo1x_1_compress(out->value, out->length,
+			pbuff + sizeof(ph), &outlen, lzowrk);
+		if(rc != 0) {
+			logit(1, "Error compressing packet: %d", rc);
+			return -1;
+		}
+		tosend += outlen;
+#else
+	else {
+		tosend += out->length;
+		memcpy(pbuff + sizeof(ph), out->value, out->length);
+
 #endif
+	}
 	sent = sendto(s, pbuff, tosend, 0, (struct sockaddr*)peer,
 		sizeof(struct sockaddr_in));
 	if(sent < 0) {
