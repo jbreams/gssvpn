@@ -230,8 +230,9 @@ int send_packet(int s, gss_buffer_desc * out,
 
 	memcpy(pbuff, &ph, sizeof(ph));
 #ifdef HAVE_ZLIB_H
-	uint32_t destLen;
-	compress(pbuff + sizeof(ph), &destLen, out->value, out->length);
+	compress(pbuff + sizeof(ph), &tosend, out->value, out->length);
+	if(tosend < maxmtu)
+		tosend += sizeof(ph);
 #else 
 	memcpy(pbuff + sizeof(ph), out->value, out->length);
 #endif
