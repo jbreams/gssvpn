@@ -34,7 +34,7 @@ struct header {
 char pbuff[8192];
 int maxmtu = 8192;
 #ifdef HAVE_LZO_H
-uint8_t lzowrk[LZO1X_1_MEM_COMPRESS];
+uint8_t lzowrk[LZO1X_999_MEM_COMPRESS];
 #endif
 
 void logit(int level, char * fmt, ...) {
@@ -241,7 +241,7 @@ int send_packet(int s, gss_buffer_desc * out,
 	memcpy(pbuff, &ph, sizeof(ph));
 #ifdef HAVE_LZO_H
 	size_t outlen;
-	int rc = lzo1x_1_compress(out->value, out->length,
+	int rc = lzo1x_999_compress(out->value, out->length,
 		pbuff + sizeof(ph), &outlen, lzowrk);
 	if(rc != 0) {
 		logit(1, "Error compressing packet: %d", rc);
