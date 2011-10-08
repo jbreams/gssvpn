@@ -114,10 +114,21 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 void reap_cb(struct ev_loop *loop, ev_periodic *w, int revents) {
 	uint8_t i;
 	time_t curtime = time(NULL);
+	OM_uint32 min, ctxtime;
+
 	for(i = 0; i < 255; i++) {
 		struct conn * cur = clients_ip[i], * last = NULL;
 		while(cur != NULL) {
 			if(curtime - cur->touched >= reapclients) {
+				struct conn * save = cur->ipnext;
+				send_packet(netfd, NULL, &cur->addr, PAC_SHUTDOWN);
+				handle_shutdown(cur);
+				cur = save;
+				continue;
+			}
+			else if(cur->gssstate == GSS_S_COMPLETE && 
+				gss_context_time(&min, cur->context,
+				&ctxtime) != GSS_S_COMPLETE) {
 				struct conn * save = cur->ipnext;
 				send_packet(netfd, NULL, &cur->addr, PAC_SHUTDOWN);
 				handle_shutdown(cur);
