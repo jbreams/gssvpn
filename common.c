@@ -19,10 +19,8 @@
 #include <errno.h>
 #include <syslog.h>
 #include <stdarg.h>
-#ifdef HAVE_LZO_H
 #include <lzo/lzo1x.h>
 #include <lzo/lzoconf.h>
-#endif
 #include "gssvpn.h"
 
 extern int verbose;
@@ -34,9 +32,7 @@ struct header {
 };
 char pbuff[8192];
 int maxmtu = 8192;
-#ifdef HAVE_LZO_H
 uint8_t lzowrk[LZO1X_999_MEM_COMPRESS];
-#endif
 
 void logit(int level, char * fmt, ...) {
 	int err;
@@ -175,7 +171,7 @@ int recv_packet(int s, gss_buffer_desc * out,
 	socklen_t ral = sizeof(struct sockaddr_in);
 	struct header ph;
 	OM_uint32 maj, min;
-	gss_buffer_desc plaintext, crypted;
+	gss_buffer_desc plaintext;
 	gss_ctx_id_t ctx;
 
 	size_t r = recvfrom(s, pbuff, sizeof(pbuff), 0,
@@ -204,7 +200,8 @@ int recv_packet(int s, gss_buffer_desc * out,
 	if(ph.len == 0 || !out)
 		return 0;
 
-	if(ctx) {
+	if(ctx && ph.pac != PAC_GSSINIT) {
+		gss_buffer_desc crypted;
 		crypted.value = pbuff + sizeof(ph);
 		crypted.length = r - sizeof(ph);
 		maj = gss_unwrap(&min, ctx, &crypted, &plaintext, NULL, NULL);
@@ -220,13 +217,11 @@ int recv_packet(int s, gss_buffer_desc * out,
 
 	out->value = malloc(ph.len);
 	out->length = ph.len;
-#ifdef HAVE_LZO_H
+
 	size_t outlen = out->length;
 	lzo1x_decompress(plaintext.value, plaintext.length,
 		out->value, &outlen, lzowrk); 
-#else
-	memcpy(out->value, plaintext.value, plaintext.length);
-#endif	
+
 	gss_release_buffer(&min, &plaintext);
 	
 	return 0;
@@ -237,7 +232,7 @@ int send_packet(int s, gss_buffer_desc * out,
 	struct header ph;
 	size_t sent, tosend = sizeof(ph);
 	ph.pac = pac;
-	gss_buffer_desc crypted, plaintext;
+	gss_buffer_desc plaintext;
 	OM_uint32 maj, min;
 	gss_ctx_id_t ctx = get_context(peer);
 
@@ -256,22 +251,18 @@ int send_packet(int s, gss_buffer_desc * out,
 		return 0;
 	}
 
-#ifdef HAVE_LZO_H
-	size_t outlen = plaintext.length;
-	int rc = lzo1x_999_compress(out->value, out->length, pbuff,
-		&outlen, lzowrk);
+	size_t outlen = 0;
+	int rc = lzo1x_999_compress(out->value, out->length,
+		pbuff + sizeof(ph), &outlen, lzowrk);
 	if(rc != 0) {
 		logit(1, "Error compressing packet %d", rc);
 		return -1;
 	}
 	plaintext.length = outlen;
-	plaintext.value = pbuff;
-#else
-	plaintext.length = out->length;
-	plaintext.value = out->value;
-#endif
+	plaintext.value = pbuff + sizeof(ph);
 
-	if(ctx) {
+	if(ctx && pac != PAC_GSSINIT) {
+		gss_buffer_desc crypted;
 		maj = gss_wrap(&min, ctx, 1, GSS_C_QOP_DEFAULT, &plaintext,
 			NULL, &crypted);
 		if(maj != GSS_S_COMPLETE) {
@@ -279,20 +270,15 @@ int send_packet(int s, gss_buffer_desc * out,
 			display_gss_err(maj, min);
 			return -1;
 		}
-	} else {
-		crypted.value = plaintext.value;
-		crypted.length = plaintext.length;
-	}
+		memcpy(pbuff + sizeof(ph), crypted.value, crypted.length);
+		tosend += crypted.length;
+		gss_release_buff(&min, &crypted);
+	} else
+		tosend += plaintext.length;
 
 	ph.packed = htons(plaintext.length);
 	memcpy(pbuff, &ph, sizeof(ph));
-	memcpy(pbuff + sizeof(ph), crypted.value, crypted.length);
-	if(pac == PAC_NETINIT)
-		tosend = maxmtu;
-	else
-		tosend += crypted.length;
 	
-	gss_release_buffer(&min, &crypted);
 	sent = sendto(s, pbuff, tosend, 0, (struct sockaddr*)peer,
 		sizeof(struct sockaddr_in));
 	if(sent < 0) {
