@@ -3,6 +3,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <pwd.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <gssapi/gssapi.h>
@@ -15,18 +16,28 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <syslog.h>
+#ifdef DARWIN
 #include <ev.h>
+#else
+#include <libev/ev.h>
+#endif
 #define GSSVPN_SERVER
 #include "gssvpn.h"
 
 struct conn * clients_ip[255];
 struct conn * clients_ether[255];
-gss_cred_id_t srvcreds;
+gss_cred_id_t srvcreds = GSS_C_NO_CREDENTIAL;
 int tapmtu = 1500;
 int verbose = 1;
 int reapclients = 36000;
+char * authfile = NULL;
 
-int tapfd, netfd;
+struct oc {
+	gss_name_t client_name;
+	struct oc * next;
+} * ochead = NULL;
+
+int tapfd = -1, netfd = -1;
 const uint64_t ether_broadcast = 0xffffffffffffffff;
 const uint64_t ether_empty = 0x0000000000000000;
 
@@ -109,7 +120,6 @@ void reap_cb(struct ev_loop *loop, ev_periodic *w, int revents) {
 			if(curtime - cur->touched >= reapclients) {
 				struct conn * save = cur->ipnext;
 				send_packet(netfd, NULL, &cur->addr, PAC_SHUTDOWN);
-				unlink_conn(cur, CLIENT_ALL);
 				handle_shutdown(cur);
 				cur = save;
 				continue;
@@ -126,6 +136,8 @@ void handle_gssinit(struct conn * client, gss_buffer_desc * intoken) {
 	gss_OID mech;
 	gss_buffer_desc output, nameout, oidout;
 	OM_uint32 flags, lmin, maj, min;
+	struct oc * cur = ochead;
+	int nameeq = 0;
 
 	if(client->gssstate == GSS_S_COMPLETE && 
 					client->context != GSS_C_NO_CONTEXT)
@@ -144,18 +156,29 @@ void handle_gssinit(struct conn * client, gss_buffer_desc * intoken) {
 		send_packet(netfd, &output, &client->addr, PAC_GSSINIT);
 		return;
 	}
-	
-	gss_display_name(&lmin, client_name, &nameout, NULL);
-	gss_oid_to_str(&lmin, mech, &oidout);
 
-	logit(0, "Authenticated connection for %s (%s) from %s",
-					nameout.value, oidout.value,
-					client->ipstr);
+	while(cur != NULL &&
+		gss_compare_name(&lmin, cur->client_name,
+			client_name, &nameeq) == GSS_S_COMPLETE &&
+		!nameeq)
+		cur = cur->next;
+
+	gss_display_name(&lmin, client_name, &nameout, NULL);
+ 
+	if(!cur) {
+		logit(0, "Connection from %s for %s is not authorized.",
+					nameout.value, client->ipstr);
+		send_packet(netfd, NULL, &client->addr, PAC_SHUTDOWN);
+		handle_shutdown(client);
+	} else {
+		logit(0, "Accepted connection for %s from %s",
+					nameout.value, client->ipstr);
+		send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
+	}
 	gss_release_buffer(&lmin, &nameout);
 	gss_release_buffer(&lmin, &oidout);
 	gss_release_name(&lmin, &client_name);
 	gss_release_oid(&lmin, &mech);
-	send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
 }
 
 void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
@@ -217,35 +240,171 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	}
 	else if(pac == PAC_GSSINIT)
 		handle_gssinit(client, &packet);
-	else if(pac == PAC_SHUTDOWN) {
-		unlink_conn(client, CLIENT_ALL);
+	else if(pac == PAC_SHUTDOWN)
 		handle_shutdown(client);
-	}
 
 	if(packet.value)
 		gss_release_buffer(&min, &packet);
 	client->touched = time(NULL);	
 }
 
+void term_cb(struct ev_loop * l, ev_signal * w, int r) {
+	OM_uint32 min;
+	uint8_t i;
+	struct oc * coc = ochead;
+	
+	for(i = 0; i < 255; i++) {
+		struct conn * c = clients_ip[i];
+		while(c) {
+			struct conn * save = c->ipnext;
+			send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN);
+			handle_shutdown(c);
+			c = save;
+		}
+	}
+
+	close(tapfd);
+	close(netfd);
+	gss_release_credential(NULL, &srvcreds);
+
+	while(coc) {
+		struct oc * n = coc->next;
+		gss_release_name(&min, &coc->client_name);
+		free(coc);
+		coc = n;
+	}
+
+	ev_break(l, EVBREAK_ALL);
+}
+
+void hup_cb(struct ev_loop * l, ev_signal * w, int r) {
+	struct oc * lock = ochead;
+	OM_uint32 maj, min;	
+	FILE * f;
+	char buff[4096];
+	gss_buffer_desc namebuf = { 4096, buff };
+
+	while(ochead) {
+		struct oc * save = lock->next;
+		gss_release_name(&min, &lock->client_name);
+		free(lock);
+		lock = save;
+	}
+
+	f = fopen(authfile, "r");
+	if(f == NULL) {
+		logit(1, "Error opening authorization file: %s", strerror(errno));
+		ev_break(l, EVBREAK_ALL);
+		return;
+	}
+
+	while(fgets(buff, 4096, f) != NULL) {
+		size_t len = strlen(buff);
+		if(buff[len - 1] != '\n') {
+			logit(1, "Invalid name %s", buff);
+			fclose(f);
+			ev_break(l, EVBREAK_ALL);
+			return;
+		}
+
+		lock = malloc(sizeof(struct oc));
+		lock->next = ochead;
+
+		len--;
+		buff[len] = 0;
+		namebuf.length = len;
+		maj = gss_import_name(&min, &namebuf,
+			GSS_C_NT_USER_NAME, &lock->client_name);	
+		if(maj != GSS_S_COMPLETE) {
+			logit(1, "Error importing name %s into auth list.", buff);
+			display_gss_err(maj, min);
+			fclose(f);
+			free(lock);
+			ev_break(l, EVBREAK_ALL);
+		}
+
+		ochead = lock;
+	}
+	fclose(f);
+}
+
 int main(int argc, char ** argv) {
 	int rc;
 	ev_periodic reaper;
 	ev_io tapio, netio;
+	ev_signal hup, term;
 	struct ev_loop * loop;
 	openlog("gssvpnd", 0, LOG_DAEMON);
+	char ch;
+	short port = 2106;
+	struct oc * cur;
+	uid_t dropto = 0;
+	int daemonize = 0;
 
-	rc = get_server_creds(&srvcreds, "gssvpn");
-	if(rc != 0)
-		return -1;
+	while((ch = getopt(argc, argv, "ds:p:i:va:u:")) != -1) {
+		switch(ch) {
+			case 'v':
+				verbose = 1;
+				break;
+			case 'p':
+				port = atoi(optarg);
+				break;
+			case 'i':
+				tapfd = open_tap("tap0");
+				break;
+			case 's':
+				rc = get_server_creds(&srvcreds, optarg);
+				if(rc != 0)
+					return -1;
+				break;
+			case 'a': {
+				FILE * testfile;
+				authfile = strdup(optarg);
+				testfile = fopen(authfile, "r");
+				if(testfile == NULL) {
+					logit(1, "Error opening authorization file %s",
+						strerror(errno));
+					return -1;
+				}
+				fclose(testfile);
+				break;
+			}
+			case 'u': {
+				struct passwd * u = getpwnam(optarg);
+				if(!u) {
+					logit(1, "Error doing user lookup for %s: (%s)",
+						optarg, strerr(errno));
+					return -1;
+				}
+				dropto = u->pw_uid;
+			}
+			case 'd':
+				daemonize = 1;
+		}
+	}
 
-	tapfd = open_tap("tap0");
-	if(tapfd < 0)
-		return -1;
+	if(srvcreds == GSS_C_NO_CREDENTIAL) {
+		rc = get_server_creds(&srvcreds, "gssvpn");
+		if(rc != 0)
+			return -1;
+	}
 
-	netfd = open_net(2106);
+	netfd = open_net(port);
 	if(netfd < 0)
 		return -1;
 
+	if(tapfd < 0) {
+		logit(1, "No tap device defined");
+		return -1;
+	}
+
+	if(dropto)
+		setuid(dropto);
+	
+	hupcb(loop, NULL, 0);
+	if(daemonize)
+		daemon(0, 0);
+	
 	memset(clients_ip, 0, sizeof(struct conn*) * 255);
 	memset(clients_ether, 0, sizeof(struct conn*) * 255);
 
@@ -256,10 +415,11 @@ int main(int argc, char ** argv) {
 	ev_io_start(loop, &tapio);
 	ev_periodic_init(&reaper, reap_cb, 0, reapclients, 0);
 	ev_periodic_start(loop, &reaper);
+	ev_signal_init(&hup, hup_cb, SIGHUP);
+	ev_signal_start(loop, &hup);
+	ev_signal_init(&term, term_cb, SIGTERM | SIGQUIT);
+	ev_signal_start(loop, &term);
 	ev_run(loop, 0);
-
-	close(tapfd);
-	close(netfd);
 
 	return 0;
 }
