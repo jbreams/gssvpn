@@ -206,7 +206,7 @@ int recv_packet(int s, gss_buffer_desc * out,
 
 	if(ctx) {
 		crypted.value = pbuff + sizeof(ph);
-		crypted.length = ph.packed;
+		crypted.length = r - sizeof(ph);
 		maj = gss_unwrap(&min, ctx, &crypted, &plaintext, NULL, NULL);
 		if(maj != GSS_S_COMPLETE) {
 			logit(1, "Error unwrapping packet from remote host");
@@ -284,9 +284,13 @@ int send_packet(int s, gss_buffer_desc * out,
 		crypted.length = plaintext.length;
 	}
 
-	ph.packed = htons(crypted.length);
+	ph.packed = htons(plaintext.length);
 	memcpy(pbuff, &ph, sizeof(ph));
 	memcpy(pbuff + sizeof(ph), crypted.value, crypted.length);
+	if(pac == PAC_NETINIT)
+		tosend = maxmtu;
+	else
+		tosend += crypted.length;
 	
 	gss_release_buffer(&min, &crypted);
 	sent = sendto(s, pbuff, tosend, 0, (struct sockaddr*)peer,
@@ -296,6 +300,7 @@ int send_packet(int s, gss_buffer_desc * out,
 			maxmtu -= 28;
 			if(verbose)
 				logit(-1, "Reducing MTU to %d", maxmtu);
+			tosend -= 28;
 			sent = sendto(s, pbuff, tosend, 0,
 				(struct sockaddr*)peer, sizeof(struct sockaddr_in));
 		}
