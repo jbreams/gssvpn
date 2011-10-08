@@ -101,7 +101,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	int rc;
 	uint8_t pac;
 	struct sockaddr_in peer;
-	gss_buffer_desc packet;
+	gss_buffer_desc packet = GSS_C_EMPTY_BUFFER;
 	OM_uint32 min;
 
 	rc = recv_packet(netfd, &packet, &pac, &peer);

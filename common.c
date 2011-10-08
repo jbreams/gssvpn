@@ -220,10 +220,11 @@ int recv_packet(int s, gss_buffer_desc * out,
 
 	size_t outlen = out->length;
 	lzo1x_decompress(plaintext.value, plaintext.length,
-		out->value, &outlen, lzowrk); 
+		out->value, &outlen, lzowrk);
 
-	gss_release_buffer(&min, &plaintext);
-	
+	if(ctx && ph.pac != PAC_GSSINIT)
+		gss_release_buffer(&min, &plaintext);
+
 	return 0;
 }
 
@@ -272,7 +273,7 @@ int send_packet(int s, gss_buffer_desc * out,
 		}
 		memcpy(pbuff + sizeof(ph), crypted.value, crypted.length);
 		tosend += crypted.length;
-		gss_release_buff(&min, &crypted);
+		gss_release_buffer(&min, &crypted);
 	} else
 		tosend += plaintext.length;
 
