@@ -15,11 +15,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <syslog.h>
-#ifdef DARWIN
 #include <ev.h>
-#else
-#include <libev/ev.h>
-#endif
 #define GSSVPN_SERVER
 #include "gssvpn.h"
 
@@ -31,7 +27,8 @@ int verbose = 1;
 int reapclients = 36000;
 
 int tapfd, netfd;
-const uint8_t ether_broadcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+const uint64_t ether_broadcast = 0xffffffffffffffff;
+const uint64_t ether_empty = 0x0000000000000000;
 
 int get_server_creds(gss_cred_id_t * sco, char * service_name) {
 	gss_buffer_desc name_buff;
@@ -54,31 +51,11 @@ int get_server_creds(gss_cred_id_t * sco, char * service_name) {
 		display_gss_err(maj_stat, min_stat);
 		return -1;
 	} else if(verbose)
-		logit(-1, "Acquired credentials for SERVICE_NAME");
+		logit(-1, "Acquired credentials for %s", service_name);
 	return 0;
 }
 
-int process_frame(gss_buffer_desc * plaintext, struct conn * client) {
-	gss_buffer_desc crypted;
-	OM_uint32 maj, min, confstate;
-	int rc;
-
-	maj = gss_wrap(&min, client->context, 1, GSS_C_QOP_DEFAULT, plaintext,
-					&confstate, &crypted);
-	if(maj != GSS_S_COMPLETE) {
-		logit(1, "Error wrapping packet for %s", client->ipstr);
-		display_gss_err(maj, min);
-		return -1;
-	}
-
-	rc = send_packet(netfd, &crypted, &client->addr, PAC_DATA);
-	gss_release_buffer(&min, &crypted);
-	return rc;
-}
-
 void handle_shutdown(struct conn * client) {
-	struct pbuff * cp;
-	uint8_t i;
 	OM_uint32 min; 
 
 	unlink_conn(client, CLIENT_ALL);
@@ -89,47 +66,40 @@ void handle_shutdown(struct conn * client) {
 }
 
 void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
-	char * framebuf = malloc(tapmtu), dstmac[6];
-	size_t size = read(ios->fd, framebuf, tapmtu);
+	uint8_t framebuf[1550], dstmac[6];
+	size_t size = read(ios->fd, framebuf, 1550);
 	gss_buffer_desc plaintext = { size, framebuf }; 
 	time_t curtime = time(NULL);
 
-	if(size == EAGAIN) {
-		free(framebuf);
+	if(size == EAGAIN)
 		return;
-	}
 
 	memcpy(dstmac, framebuf, 6);
-	if(memcmp(dstmac, ether_broadcast, 6) == 0) {
+	if(memcmp(dstmac, &ether_broadcast, 6) == 0) {
 		uint8_t i;
 		for(i = 0; i < 255; i++) {
 			struct conn * cur = clients_ether[i];
 			while(cur) {
 				cur->touched = curtime;
-				process_frame(&plaintext, cur);
+				send_packet(netfd, &plaintext, &cur->addr, PAC_DATA);
 				cur = cur->ethernext;
 			}
 		}
-	} else {
-		uint8_t eh = hash(dstmac, 6);
-		struct conn * client = clients_ether[eh];
-		while(client && memcmp(client->mac, dstmac, 6) != 0)
-			client = client->ethernext;
-		if(client) {
-			process_frame(&plaintext, client);
-			client->touched = curtime;
-		}
+		return;
 	}
-	
-	free(framebuf);
+	uint8_t eh = hash(dstmac, 6);
+	struct conn * client = clients_ether[eh];
+	while(client && memcmp(client->mac, dstmac, 6) != 0)
+		client = client->ethernext;
+	if(!client) {
+		if(verbose)
+			logit(-1, "Received packet for unknown client");
+		return;
+	}
+
+	send_packet(netfd, &plaintext, &client->addr, PAC_DATA);
 }
 
-/*
- * This is extremely extremely inefficient, like n^4, where n could be
- * any number between 0 and infinity. I'm thinking of adding a timeout for
- * each packet/client in the main event loop, but for now, this at least
- * gets the idea down on paper.
- */
 void reap_cb(struct ev_loop *loop, ev_periodic *w, int revents) {
 	uint8_t i;
 	time_t curtime = time(NULL);
@@ -141,7 +111,6 @@ void reap_cb(struct ev_loop *loop, ev_periodic *w, int revents) {
 				send_packet(netfd, NULL, &cur->addr, PAC_SHUTDOWN);
 				unlink_conn(cur, CLIENT_ALL);
 				handle_shutdown(cur);
-				free(cur);
 				cur = save;
 				continue;
 			}
@@ -190,15 +159,13 @@ void handle_gssinit(struct conn * client, gss_buffer_desc * intoken) {
 }
 
 void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
-	gss_buffer_desc crypted = GSS_C_EMPTY_BUFFER;
+	gss_buffer_desc packet = GSS_C_EMPTY_BUFFER;
 	char pac;
 	struct sockaddr_in peer;
-	int rc = recv_packet(netfd, &crypted, &pac, &peer);
-	OM_uint32 maj, min;
 	struct conn * client;
-	const uint8_t ethempty[6] = { 0, 0, 0, 0, 0, 0 };
+	OM_uint32 min;
 
-	if(rc != 0)
+	if(recv_packet(netfd, &packet, &pac, &peer) != 0)
 		return;
 
 	client = get_conn(&peer);
@@ -207,58 +174,56 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 
 	if(client->gssstate == GSS_S_CONTINUE_NEEDED && pac != PAC_GSSINIT) {
 		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT);
-		if(crypted.length)
-			gss_release_buffer(&min, &crypted);
+		if(packet.length)
+			gss_release_buffer(&min, &packet);
 		return;
 	}
 
-	if(pac == PAC_DATA && memcmp(client->mac, ethempty, sizeof(ethempty)) == 0) {
+	if(pac == PAC_DATA && memcmp(client->mac, &ether_empty,
+		sizeof(ether_empty)) == 0) {
 		send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
-		if(crypted.length)
-			gss_release_buffer(&min, &crypted);
+		if(packet.length)
+			gss_release_buffer(&min, &packet);
 		return;
 	}
 
 	if(pac == PAC_DATA || pac == PAC_NETINIT) {
-		gss_buffer_desc plaintext;
-
-		maj = gss_unwrap(&min, client->context, &crypted,
-					&plaintext, NULL, NULL);
-		if(maj != GSS_S_COMPLETE) {
-			logit(1, "Error unwrapping packet from %s",
-					client->ipstr);
-			display_gss_err(maj, min);
-			gss_release_buffer(&min, &crypted);
-			return;
-		}
-
 		if(pac == PAC_NETINIT) {
 			uint8_t eh;
-			if(plaintext.length != sizeof(client->mac)) {
-				if(plaintext.value)
-					gss_release_buffer(&min, &plaintext);
+			if(packet.length != sizeof(client->mac)) {
+				if(packet.value)
+					gss_release_buffer(&min, &packet);
 				logit(1, "Invalid netinit packet received");
 			}
-			memcpy(client->mac, plaintext.value, sizeof(client->mac));
-			gss_release_buffer(&min, &plaintext);
+			memcpy(client->mac, packet.value, sizeof(client->mac));
+			gss_release_buffer(&min, &packet);
 			unlink_conn(client, CLIENT_ETHERNET);
 			eh = hash(client->mac, sizeof(client->mac));
 			client->ethernext = clients_ether[eh];
 			clients_ether[eh] = client;
 			send_packet(netfd, NULL, &client->addr, PAC_NOOP);
 		}
-		else if(plaintext.length > 0) {
-			write(tapfd, plaintext.value, plaintext.length);
-			gss_release_buffer(&min, &plaintext);
+		else if(packet.length > 0) {
+			if(verbose)
+				logit(-1, "Writing %d bytes to tap", packet.length);
+			size_t s = write(tapfd, packet.value, packet.length);
+			if(s < 0)
+				logit(1, "Error writing to tap: %s", strerror(errno));
+			else if(s < packet.length && verbose)
+				logit(1, "Wrote less than expected to tap: %s < %s",
+					s, packet.length);
+			gss_release_buffer(&min, &packet);
 		}
 	}
 	else if(pac == PAC_GSSINIT)
-		handle_gssinit(client, &crypted);
-	else if(pac == PAC_SHUTDOWN)
+		handle_gssinit(client, &packet);
+	else if(pac == PAC_SHUTDOWN) {
+		unlink_conn(client, CLIENT_ALL);
 		handle_shutdown(client);
+	}
 
-	if(crypted.value)
-		gss_release_buffer(&min, &crypted);
+	if(packet.value)
+		gss_release_buffer(&min, &packet);
 	client->touched = time(NULL);	
 }
 

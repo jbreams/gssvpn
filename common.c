@@ -29,6 +29,7 @@ extern int verbose;
 
 struct header {
 	uint16_t len;
+	uint16_t packed;
 	uint8_t pac;
 };
 char pbuff[8192];
@@ -169,10 +170,13 @@ int open_net(short port) {
 	return s;
 }
 
-int recv_packet(int s, gss_buffer_desc * out, char * pacout,
-		struct sockaddr_in * peer) {
+int recv_packet(int s, gss_buffer_desc * out,
+		char * pacout, struct sockaddr_in * peer) {
 	socklen_t ral = sizeof(struct sockaddr_in);
 	struct header ph;
+	OM_uint32 maj, min;
+	gss_buffer_desc plaintext, crypted;
+	gss_ctx_id_t ctx;
 
 	size_t r = recvfrom(s, pbuff, sizeof(pbuff), 0,
 					(struct sockaddr*)peer, &ral);
@@ -190,23 +194,40 @@ int recv_packet(int s, gss_buffer_desc * out, char * pacout,
 	}
 	else if(verbose)
 		logit(-1, "Received %d bytes from remote host", r);
+	ctx = get_context(peer);
 
 	memcpy(&ph, pbuff, sizeof(ph));	
 	ph.len = ntohs(ph.len);
+	ph.packed = ntohs(ph.packed);
 	*pacout = ph.pac;
 
 	if(ph.len == 0 || !out)
 		return 0;
 
+	if(ctx) {
+		crypted.value = pbuff + sizeof(ph);
+		crypted.length = ph.packed;
+		maj = gss_unwrap(&min, ctx, &crypted, &plaintext, NULL, NULL);
+		if(maj != GSS_S_COMPLETE) {
+			logit(1, "Error unwrapping packet from remote host");
+			display_gss_err(maj, min);
+			return -1;
+		}
+	} else {
+		plaintext.value = pbuff + sizeof(ph);
+		plaintext.length = ph.packed;
+	}
+
 	out->value = malloc(ph.len);
 	out->length = ph.len;
 #ifdef HAVE_LZO_H
 	size_t outlen = out->length;
-	lzo1x_decompress(pbuff + sizeof(ph), r - sizeof(ph),
+	lzo1x_decompress(plaintext.value, plaintext.length,
 		out->value, &outlen, lzowrk); 
 #else
-	memcpy(out->value, pbuff + sizeof(ph), ph.len);
+	memcpy(out->value, plaintext.value, plaintext.length);
 #endif	
+	gss_release_buffer(&min, &plaintext);
 	
 	return 0;
 }
@@ -216,6 +237,10 @@ int send_packet(int s, gss_buffer_desc * out,
 	struct header ph;
 	size_t sent, tosend = sizeof(ph);
 	ph.pac = pac;
+	gss_buffer_desc crypted, plaintext;
+	OM_uint32 maj, min;
+	gss_ctx_id_t ctx = get_context(peer);
+
 	if(out && out->length)
 		ph.len = htons(out->length);
 	else {
@@ -231,28 +256,39 @@ int send_packet(int s, gss_buffer_desc * out,
 		return 0;
 	}
 
-	if(out->length > maxmtu) {
-		logit(1, "Cannot send packet of %d bytes larger than MTU of %d",
-			out->length, maxmtu);
-		return -1;
-	}
-
-
-	memcpy(pbuff, &ph, sizeof(ph));
 #ifdef HAVE_LZO_H
-	size_t outlen;
-	int rc = lzo1x_999_compress(out->value, out->length,
-		pbuff + sizeof(ph), &outlen, lzowrk);
+	size_t outlen = plaintext.length;
+	int rc = lzo1x_999_compress(out->value, out->length, pbuff,
+		&outlen, lzowrk);
 	if(rc != 0) {
-		logit(1, "Error compressing packet: %d", rc);
+		logit(1, "Error compressing packet %d", rc);
 		return -1;
 	}
-	tosend += outlen;
+	plaintext.length = outlen;
+	plaintext.value = pbuff;
 #else
-	tosend += out->length;
-	memcpy(pbuff + sizeof(ph), out->value, out->length);
+	plaintext.length = out->length;
+	plaintext.value = out->value;
 #endif
+
+	if(ctx) {
+		maj = gss_wrap(&min, ctx, 1, GSS_C_QOP_DEFAULT, &plaintext,
+			NULL, &crypted);
+		if(maj != GSS_S_COMPLETE) {
+			logit(1, "Error encrypting packet");
+			display_gss_err(maj, min);
+			return -1;
+		}
+	} else {
+		crypted.value = plaintext.value;
+		crypted.length = plaintext.length;
+	}
+
+	ph.packed = htons(crypted.length);
+	memcpy(pbuff, &ph, sizeof(ph));
+	memcpy(pbuff + sizeof(ph), crypted.value, crypted.length);
 	
+	gss_release_buffer(&min, &crypted);
 	sent = sendto(s, pbuff, tosend, 0, (struct sockaddr*)peer,
 		sizeof(struct sockaddr_in));
 	if(sent < 0) {

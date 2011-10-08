@@ -15,11 +15,9 @@ extern struct conn * clients_ether[255];
 extern int verbose;
 
 struct conn * get_conn(struct sockaddr_in * peer) {
-	char * peerstr = (char*)peer;
-	char * ipstr; 
 	struct conn * client;
-	int i;
-	uint8_t h = hash((char*)peer, sizeof(struct sockaddr_in));
+	uint8_t h = hash((uint8_t*)peer, sizeof(struct sockaddr_in));
+	char * ipstr;
 
 	client = clients_ip[h];
 	while(client && memcmp(&client->addr, peer,
@@ -33,17 +31,25 @@ struct conn * get_conn(struct sockaddr_in * peer) {
 		logit(1, "Unable to allocate new connection for client");
 		return NULL;
 	}
+	memset(client, 0, sizeof(struct conn));
 	client->ipnext = clients_ip[h];
 	clients_ip[h] = client;
 
-	memset(client, 0, sizeof(struct conn));
 	memcpy(&client->addr, peer, sizeof(struct sockaddr_in));
 	ipstr = inet_ntoa(peer->sin_addr);
 	strcpy(client->ipstr, ipstr);
 	client->gssstate = GSS_S_CONTINUE_NEEDED;
-	client->context = GSS_C_NO_CONTEXT;
 	client->touched = time(NULL);
 	return client;
+}
+
+gss_ctx_id_t get_context(struct sockaddr_in * peer) {
+	struct conn * client = get_conn(peer);
+	if(!client)
+		return NULL;
+	if(client->gssstate != GSS_S_COMPLETE)
+		return NULL;
+	return client->context;
 }
 
 void unlink_conn(struct conn * conn, char which) {

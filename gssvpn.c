@@ -21,17 +21,21 @@
 
 gss_ctx_id_t context = GSS_C_NO_CONTEXT;
 OM_uint32 gssstate = GSS_S_CONTINUE_NEEDED;
-int tapfd, netfd, gbs = PBUFF_SIZE + 6, reap = 30, verbose = 0;
+int tapfd, netfd, reap = 30, verbose = 0;
 struct sockaddr_in server;
 char * tapdev, *service, *hostname;
 extern struct pbuff * packets[255];
 
+gss_ctx_id_t get_context(struct sockaddr_in* peer) {
+	if(gssstate == GSS_S_COMPLETE)
+		return context;
+	return NULL;
+}
+
 int do_netinit() {
 	struct ifaddrs * ifp, *cifp;
 	char mac[6];
-	OM_uint32 maj, min, confstate;
-	gss_buffer_desc crypted = GSS_C_EMPTY_BUFFER;
-	gss_buffer_desc plaintext = { sizeof(mac), mac };
+	gss_buffer_desc macout = { 6, mac };
 	int rc;
 
 	if(getifaddrs(&ifp) < 0) {
@@ -51,15 +55,7 @@ int do_netinit() {
 	memcpy(mac, LLADDR(sdl), sizeof(mac));
 	freeifaddrs(ifp);
 
-	maj = gss_wrap(&min, context, 1, GSS_C_QOP_DEFAULT, &plaintext,
-					&confstate, &crypted);
-	if(maj != GSS_S_COMPLETE) {
-		logit(1, "Error while wrapping netinit response");
-		display_gss_err(maj, min);
-	}
-
-	rc = send_packet(netfd, &crypted, &server, PAC_NETINIT);
-	gss_release_buffer(&min, &crypted);
+	send_packet(netfd, &macout, &server, PAC_NETINIT);
 	return rc;
 }
 
@@ -102,68 +98,54 @@ int do_gssinit(gss_buffer_desc * in) {
 }
 
 void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
-	gss_buffer_desc crypted = GSS_C_EMPTY_BUFFER;
-	OM_uint32 maj, min;
 	int rc;
 	uint8_t pac;
 	struct sockaddr_in peer;
+	gss_buffer_desc packet;
+	OM_uint32 min;
 
-	rc = recv_packet(netfd, &crypted, &pac, &peer);
+	rc = recv_packet(netfd, &packet, &pac, &peer);
 	if(rc != 0)
 		return;
 	
 	if(pac == PAC_DATA) {
-		gss_buffer_desc plaintext = GSS_C_EMPTY_BUFFER;
-		maj = gss_unwrap(&min, context, &crypted, &plaintext, NULL, NULL);
-		gss_release_buffer(&min, &crypted);
-		if(maj != GSS_S_COMPLETE) {
-			logit(1, "Error unwrapping packet.");
-			display_gss_err(maj, min);
-			return;
-		}
 		if(verbose)
-			logit(0, "Writing %d bytes to TAP", plaintext.length);
+			logit(0, "Writing %d bytes to TAP", packet.length);
 
-		write(tapfd, plaintext.value, plaintext.length);
-		gss_release_buffer(&min, &plaintext);
+		size_t s = write(tapfd, packet.value, packet.length);
+		if(s < 0)
+			logit(1, "Error writing packet to tap: %s", strerror(errno));
+		else if(s < packet.length)
+			logit(1, "Sent less than expected to tap: %d < %d",
+				s, packet.length);
+		gss_release_buffer(&min, &packet);
 		return;
 	}
-	else if(pac == PAC_NETINIT) {
+	else if(pac == PAC_NETINIT)
 		do_netinit();
-	}
 	else if(pac == PAC_GSSINIT)
-		do_gssinit(&crypted);
+		do_gssinit(&packet);
 	else if(pac == PAC_SHUTDOWN)
 		ev_break(loop, EVBREAK_ALL);
-	if(crypted.length)
-		gss_release_buffer(&min, &crypted);
+	if(packet.length)
+		gss_release_buffer(&min, &packet);
 }
 
 void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
-	char inbuff[PBUFF_SIZE];
-	gss_buffer_desc plaintext = { PBUFF_SIZE, inbuff };
-	gss_buffer_desc crypted;
-	OM_uint32 maj, min;
+	uint8_t inbuff[1550];
+	gss_buffer_desc plaintext = { 1550, inbuff };
 
-	plaintext.length = read(tapfd, inbuff, PBUFF_SIZE);
+	plaintext.length = read(tapfd, inbuff, 1550);
 	if(plaintext.length < 0) {
 		logit(1, "Error receiving packet from TAP: %s",
-					strerror(errno));
+			strerror(errno));
 		return;
 	}
 	else if(verbose)
-		logit(-1, "Received packet from TAP of %d bytes", plaintext.length);
+		logit(-1, "Received packet from TAP of %d bytes",
+			plaintext.length);
 
-	maj = gss_wrap(&min, context, 1, GSS_C_QOP_DEFAULT, &plaintext,
-					NULL, &crypted);
-	if(maj != GSS_S_COMPLETE) {
-		logit(1, "Error wrapping packet.");
-		display_gss_err(maj, min);
-		return;
-	}
-
-	send_packet(netfd, &crypted, &server, PAC_DATA);
-	gss_release_buffer(&min, &crypted);
+	send_packet(netfd, &plaintext, &server, PAC_DATA);
 	return;
 }
 

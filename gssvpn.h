@@ -9,8 +9,6 @@
 #define CLIENT_ETHERNET 2
 #define CLIENT_ALL 3
 
-#define PBUFF_SIZE 3000
-
 #ifdef GSSVPN_SERVER
 struct conn {
 	gss_ctx_id_t context;
@@ -27,12 +25,13 @@ struct conn {
 void display_gss_err(OM_uint32 major, OM_uint32 minor);
 int send_packet(int s, gss_buffer_desc * out,
 			struct sockaddr_in * peer, char pac); 
-int recv_packet(int s, gss_buffer_desc * out, char * pacout,
-			struct sockaddr_in * peer);
+int recv_packet(int s, gss_buffer_desc * out,
+			char * pacout, struct sockaddr_in * peer);
 void logit(int level, char * fmt, ...);
 char hash(char * in, int len);
 int open_tap(char * dev);
 int open_net(short port);
+gss_ctx_id_t get_context(struct sockaddr_in * peer);
 
 #ifdef GSSVPN_SERVER
 struct conn * get_conn(struct sockaddr_in * peer);
