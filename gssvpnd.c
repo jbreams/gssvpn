@@ -27,8 +27,8 @@
 struct conn * clients_ip[255];
 struct conn * clients_ether[255];
 gss_cred_id_t srvcreds = GSS_C_NO_CREDENTIAL;
-int tapmtu = 1500;
-int verbose = 1;
+int verbose = 0;
+int daemonize = 0;
 int reapclients = 36000;
 char * authfile = NULL;
 
@@ -145,7 +145,7 @@ void reap_cb(struct ev_loop *loop, ev_periodic *w, int revents) {
 void handle_gssinit(struct conn * client, gss_buffer_desc * intoken) {
 	gss_name_t client_name;
 	gss_OID mech;
-	gss_buffer_desc output, nameout, oidout;
+	gss_buffer_desc output, nameout;
 	OM_uint32 flags, lmin, maj, min;
 	struct oc * cur = ochead;
 	int nameeq = 0;
@@ -187,7 +187,6 @@ void handle_gssinit(struct conn * client, gss_buffer_desc * intoken) {
 		send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
 	}
 	gss_release_buffer(&lmin, &nameout);
-	gss_release_buffer(&lmin, &oidout);
 	gss_release_name(&lmin, &client_name);
 	gss_release_oid(&lmin, &mech);
 }
@@ -276,7 +275,6 @@ void term_cb(struct ev_loop * l, ev_signal * w, int r) {
 
 	close(tapfd);
 	close(netfd);
-	gss_release_credential(NULL, &srvcreds);
 
 	while(coc) {
 		struct oc * n = coc->next;
@@ -350,7 +348,6 @@ int main(int argc, char ** argv) {
 	short port = 2106;
 	struct oc * cur;
 	uid_t dropto = 0;
-	int daemonize = 0;
 
 	while((ch = getopt(argc, argv, "ds:p:i:va:u:")) != -1) {
 		switch(ch) {
@@ -384,7 +381,7 @@ int main(int argc, char ** argv) {
 				struct passwd * u = getpwnam(optarg);
 				if(!u) {
 					logit(1, "Error doing user lookup for %s: (%s)",
-						optarg, strerr(errno));
+						optarg, strerror(errno));
 					return -1;
 				}
 				dropto = u->pw_uid;
@@ -412,7 +409,7 @@ int main(int argc, char ** argv) {
 	if(dropto)
 		setuid(dropto);
 	
-	hupcb(loop, NULL, 0);
+	hup_cb(loop, NULL, 0);
 	if(daemonize)
 		daemon(0, 0);
 	

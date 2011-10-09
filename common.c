@@ -23,6 +23,7 @@
 #include <lzo/lzoconf.h>
 #include "gssvpn.h"
 
+extern int daemonize;
 extern int verbose;
 
 struct header {
@@ -45,8 +46,12 @@ void logit(int level, char * fmt, ...) {
 	else
 		err = LOG_ERR;
 	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap); 
-	fprintf(stderr, "\n");
+	if(daemonize)
+		vsyslog(err, fmt, ap);
+	else {
+		vfprintf(stderr, fmt, ap); 
+		fprintf(stderr, "\n");
+	}
 	va_end(ap);
 }
 
