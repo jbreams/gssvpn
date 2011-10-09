@@ -228,8 +228,6 @@ int send_packet(int s, gss_buffer_desc * out,
 	struct header ph;
 	size_t sent, tosend;
 	ph.pac = pac;
-	gss_buffer_desc pout;
-	OM_uint32 maj, min;
 	gss_ctx_id_t ctx = get_context(peer);
 	int rc;
 
@@ -248,6 +246,8 @@ int send_packet(int s, gss_buffer_desc * out,
 	}
 
 	if(ctx && pac != PAC_GSSINIT) {
+		gss_buffer_desc pout;
+		OM_uint32 maj, min;
 		maj = gss_wrap(&min, ctx, 1, GSS_C_QOP_DEFAULT, out,
 			NULL, &pout);
 		if(maj != GSS_S_COMPLETE) {
@@ -255,16 +255,13 @@ int send_packet(int s, gss_buffer_desc * out,
 			display_gss_err(maj, min);
 			return -1;
 		}
-	} else {
-		pout.value = out->value;
-		pout.length = out->length;
-	}
 
-	rc = lzo1x_999_compress(pout.value, pout.length,
-		pbuff + sizeof(ph), &tosend, lzowrk);
-
-	if(ctx && pac != PAC_GSSINIT)
+		rc = lzo1x_999_compress(pout.value, pout.length,
+			pbuff + sizeof(ph), &tosend, lzowrk);
 		gss_release_buffer(&min, &pout);
+	} else	
+		rc = lzo1x_999_compress(out->value, out->length,
+			pbuff + sizeof(ph), &tosend, lzowrk);
 
 	if(rc != 0) {
 		logit(1, "Error compressing packet %d", rc);
@@ -273,6 +270,7 @@ int send_packet(int s, gss_buffer_desc * out,
 	
 	ph.packed = htons(tosend);
 	memcpy(pbuff, &ph, sizeof(ph));
+	tosend += sizeof(ph);
 	
 	sent = sendto(s, pbuff, tosend, 0, (struct sockaddr*)peer,
 		sizeof(struct sockaddr_in));
