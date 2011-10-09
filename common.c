@@ -6,7 +6,6 @@
 #include <netdb.h>
 #include <fcntl.h>
 #include <stdio.h>
-#include <poll.h>
 #include <gssapi/gssapi.h>
 #include <unistd.h>
 #include <net/if.h>
@@ -31,7 +30,6 @@ struct header {
 	uint8_t pac;
 };
 char pbuff[8192];
-int maxmtu = 8192;
 uint8_t lzowrk[LZO1X_999_MEM_COMPRESS];
 
 void logit(int level, char * fmt, ...) {
@@ -171,8 +169,10 @@ int recv_packet(int s, gss_buffer_desc * out,
 	socklen_t ral = sizeof(struct sockaddr_in);
 	struct header ph;
 	OM_uint32 maj, min;
-	gss_buffer_desc plaintext;
+	uint8_t crbuf[8192];
+	gss_buffer_desc crypted = { 8192, crbuf };
 	gss_ctx_id_t ctx;
+	int rc;
 
 	size_t r = recvfrom(s, pbuff, sizeof(pbuff), 0,
 					(struct sockaddr*)peer, &ral);
@@ -200,30 +200,25 @@ int recv_packet(int s, gss_buffer_desc * out,
 	if(ph.len == 0 || !out)
 		return 0;
 
+	rc = lzo1x_decompress_safe(pbuff + sizeof(ph), ph.packed,
+		crypted.value, &crypted.length, lzowrk);
+	if(rc != 0) {
+		logit(1, "Error decompressing packet %d", rc);
+		return -1;
+	}
+
 	if(ctx && ph.pac != PAC_GSSINIT) {
-		gss_buffer_desc crypted;
-		crypted.value = pbuff + sizeof(ph);
-		crypted.length = r - sizeof(ph);
-		maj = gss_unwrap(&min, ctx, &crypted, &plaintext, NULL, NULL);
+		maj = gss_unwrap(&min, ctx, &crypted, out, NULL, NULL);
 		if(maj != GSS_S_COMPLETE) {
 			logit(1, "Error unwrapping packet from remote host");
 			display_gss_err(maj, min);
 			return -1;
 		}
 	} else {
-		plaintext.value = pbuff + sizeof(ph);
-		plaintext.length = ph.packed;
+		out->value = malloc(ph.len);
+		out->length = ph.len;
+		memcpy(out->value, crypted.value, ph.len);
 	}
-
-	out->value = malloc(ph.len);
-	out->length = ph.len;
-
-	size_t outlen = out->length;
-	lzo1x_decompress(plaintext.value, plaintext.length,
-		out->value, &outlen, lzowrk);
-
-	if(ctx && ph.pac != PAC_GSSINIT)
-		gss_release_buffer(&min, &plaintext);
 
 	return 0;
 }
@@ -231,69 +226,59 @@ int recv_packet(int s, gss_buffer_desc * out,
 int send_packet(int s, gss_buffer_desc * out,
 		struct sockaddr_in * peer, char pac) {
 	struct header ph;
-	size_t sent, tosend = sizeof(ph);
+	size_t sent, tosend;
 	ph.pac = pac;
-	gss_buffer_desc plaintext;
+	gss_buffer_desc pout;
 	OM_uint32 maj, min;
 	gss_ctx_id_t ctx = get_context(peer);
+	int rc;
 
 	if(out && out->length)
 		ph.len = htons(out->length);
 	else {
 		ph.len = 0;
-		sent = sendto(s, &ph, tosend, 0, (struct sockaddr*)peer,
-			sizeof(struct sockaddr_in));
+		sent = sendto(s, &ph, sizeof(ph), 0,
+			(struct sockaddr*)peer, sizeof(struct sockaddr_in));
 		if(sent < 0) {
-			sent = errno;
-			logit(1, "Error sending PH to remote host: %s",
-				strerror(sent));
+			logit(1, "Error sending header to remote host: %s",
+				strerror(errno));
 			return -1;
 		}
 		return 0;
 	}
 
-	size_t outlen = 0;
-	int rc = lzo1x_999_compress(out->value, out->length,
-		pbuff + sizeof(ph), &outlen, lzowrk);
-	if(rc != 0) {
-		logit(1, "Error compressing packet %d", rc);
-		return -1;
-	}
-	plaintext.length = outlen;
-	plaintext.value = pbuff + sizeof(ph);
-
 	if(ctx && pac != PAC_GSSINIT) {
-		gss_buffer_desc crypted;
-		maj = gss_wrap(&min, ctx, 1, GSS_C_QOP_DEFAULT, &plaintext,
-			NULL, &crypted);
+		maj = gss_wrap(&min, ctx, 1, GSS_C_QOP_DEFAULT, out,
+			NULL, &pout);
 		if(maj != GSS_S_COMPLETE) {
 			logit(1, "Error encrypting packet");
 			display_gss_err(maj, min);
 			return -1;
 		}
-		memcpy(pbuff + sizeof(ph), crypted.value, crypted.length);
-		tosend += crypted.length;
-		gss_release_buffer(&min, &crypted);
-	} else
-		tosend += plaintext.length;
+	} else {
+		pout.value = out->value;
+		pout.length = out->length;
+	}
 
-	ph.packed = htons(plaintext.length);
+	rc = lzo1x_999_compress(pout.value, pout.length,
+		pbuff + sizeof(ph), &tosend, lzowrk);
+
+	if(ctx && pac != PAC_GSSINIT)
+		gss_release_buffer(&min, &pout);
+
+	if(rc != 0) {
+		logit(1, "Error compressing packet %d", rc);
+		return -1;
+	}
+	
+	ph.packed = htons(tosend);
 	memcpy(pbuff, &ph, sizeof(ph));
 	
 	sent = sendto(s, pbuff, tosend, 0, (struct sockaddr*)peer,
 		sizeof(struct sockaddr_in));
 	if(sent < 0) {
-		while(errno == EMSGSIZE) {
-			maxmtu -= 28;
-			if(verbose)
-				logit(-1, "Reducing MTU to %d", maxmtu);
-			tosend -= 28;
-			sent = sendto(s, pbuff, tosend, 0,
-				(struct sockaddr*)peer, sizeof(struct sockaddr_in));
-		}
-		sent = errno;
 		logit(1, "Error sending PH to remote host: %s",
-			strerror(sent));
+			strerror(errno));
 		return -1;
 	}
 	else if(verbose)
