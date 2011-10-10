@@ -73,12 +73,15 @@ void handle_shutdown(struct conn * client) {
 		gss_delete_sec_context(&min, &client->context, NULL);
 
 	if(client->ni) {
-		ev_io_stop(client->loop, &client->nipipe);
-		ev_child_stop(client->loop, &client->nichild);
+		if(ev_is_active(&client->nipipe))
+			ev_io_stop(client->loop, &client->nipipe);
+		if(ev_is_active(&client->nichild))
+			ev_child_stop(client->loop, &client->nichild);
 		free(client->ni);
 	}
 
-	ev_timer_stop(client->loop, &client->conntimeout);
+	if(ev_is_active(&client->conntimeout))
+		ev_timer_stop(client->loop, &client->conntimeout);
 	if(client->princname)
 		free(client->princname);
 
@@ -214,6 +217,9 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 void handle_netinit(struct ev_loop * loop, struct conn * client) {
 	pid_t pid;
 	int fds[2];
+
+	if(client->ci)
+		return;
 
 	if(!netinit_util) {
 		struct netinit ni;
