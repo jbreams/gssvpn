@@ -9,6 +9,7 @@
 #include <gssapi/gssapi.h>
 #include <unistd.h>
 #include <net/if.h>
+#include <net/ethernet.h>
 #if defined(HAVE_IF_TUN)
 #include <linux/if_tun.h>
 #endif
@@ -30,12 +31,7 @@ gss_cred_id_t srvcreds = GSS_C_NO_CREDENTIAL;
 int verbose = 0;
 int daemonize = 0;
 int reapclients = 36000;
-char * authfile = NULL;
-
-struct oc {
-	gss_name_t client_name;
-	struct oc * next;
-} * ochead = NULL;
+char * netinit_util = NULL;
 
 int tapfd = -1, netfd = -1;
 const uint64_t ether_broadcast = 0xffffffffffffffff;
@@ -67,20 +63,125 @@ int get_server_creds(gss_cred_id_t * sco, char * service_name) {
 }
 
 void handle_shutdown(struct conn * client) {
-	OM_uint32 min; 
+	OM_uint32 min;
+
+	logit(0, "Shutting down client %s:%d (%s)",
+		client->ipstr, client->addr.sin_port, client->princname);
 
 	unlink_conn(client, CLIENT_ALL);
 	if(client->context != GSS_C_NO_CONTEXT)
-		gss_delete_sec_context(&min, &client->context, NULL); 
+		gss_delete_sec_context(&min, &client->context, NULL);
+
+	if(client->ni) {
+		ev_io_stop(client->loop, &client->nipipe);
+		ev_child_stop(client->loop, &client->nichild);
+		free(client->ni);
+	}
+
+	ev_timer_stop(client->loop, &client->conntimeout);
+	if(client->princname)
+		free(client->princname);
 
 	free(client);
+}
+
+void netinit_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
+	struct conn * c = (struct conn*)ios->data;
+	uint8_t buf[1024];
+	size_t r, offset = 0;
+	const uint64_t ether_null = 0;
+
+	if(!c->ni) {
+		logit(1, "Called netinit read for a null pointer!!");
+		return;
+	}
+
+	if(c->ni->len == sizeof(c->ni->payload))
+		return;
+
+	while((r = read(ios->fd, buf, 1024)) > 0) {
+		size_t tocopy;
+		if(memcmp(c->mac, &ether_null, sizeof(c->mac)) == 0) {
+			struct ether_addr * laddr;
+			uint8_t * lock = buf;
+			while(*lock != '\n') lock++;
+			*lock++ = 0;
+			laddr = ether_aton(buf);
+			memcpy(c->mac, laddr, sizeof(c->mac));
+			offset = (lock - buf);
+		}
+		tocopy = r - offset;
+
+		if(tocopy + c->ni->len > sizeof(c->ni->payload))
+			tocopy = sizeof(c->ni->payload) - c->ni->len;
+
+		memcpy(c->ni->payload + c->ni->len, buf + offset, tocopy);
+		c->ni->len += tocopy;
+	}
+}
+
+void conn_timeout_cb(struct ev_loop * loop, ev_timer * iot, int revents) {
+	struct conn * c = (struct conn*)iot->data;
+
+	logit(0, "Connection %s:%d (%s) has timed out.",
+		c->ipstr, c->addr.sin_port, c->princname);
+
+	send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN);
+	handle_shutdown(c);
+}
+
+void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
+	struct conn * c = (struct conn*)ioc->data;
+	const size_t tosend = c->ni->len + sizeof(c->ni->mac) + sizeof(uint16_t);
+	gss_buffer_desc out;
+	OM_uint32 maj, min, timeout;
+	uint8_t eh;
+
+	if(ioc->rstatus != 0) {
+		logit(0, "Rejecting client %s:%d (%s)", c->ipstr,
+			c->addr.sin_port, c->princname);
+		send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN);
+		handle_shutdown(c);
+		return;
+	}
+
+	memcpy(c->mac, c->ni->mac, sizeof(c->mac));
+	eh = hash(c->mac, sizeof(c->mac));
+	unlink_conn(c, CLIENT_ETHERNET);
+	c->ethernext = clients_ether[eh];
+	clients_ether[eh] = c;
+
+	maj = gss_context_time(&min, c->context, &timeout);
+	if(maj != GSS_S_COMPLETE) {
+		logit(1, "Unable to get remaining time for context");
+		display_gss_err(maj, min);
+		send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN);
+		handle_shutdown(c);
+		return;	
+	}
+
+	if(timeout < reapclients)
+		timeout = reapclients;
+
+	ev_timer_init(&c->conntimeout, conn_timeout_cb, timeout, 0);
+	c->conntimeout.data = c;
+	ev_start(loop, &c->conntimeout);
+
+	c->ni->len = htons(c->ni->len);
+	out.length = tosend;
+	out.value = &c->ni;
+	send_packet(netfd, &out, &c->addr, PAC_NETINIT);
+
+	free(c->ni);
+	c->ni = NULL;
+	logit(0, "Client %s:%d (%s) is starting normal operation",
+		c->ipstr, c->addr.sin_port, c->princname);
 }
 
 void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	uint8_t framebuf[1550], dstmac[6];
 	size_t size = read(ios->fd, framebuf, 1550);
 	gss_buffer_desc plaintext = { size, framebuf }; 
-	time_t curtime = time(NULL);
 
 	if(size == EAGAIN)
 		return;
@@ -91,7 +192,6 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		for(i = 0; i < 255; i++) {
 			struct conn * cur = clients_ether[i];
 			while(cur) {
-				cur->touched = curtime;
 				send_packet(netfd, &plaintext, &cur->addr, PAC_DATA);
 				cur = cur->ethernext;
 			}
@@ -111,43 +211,77 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	send_packet(netfd, &plaintext, &client->addr, PAC_DATA);
 }
 
-void reap_cb(struct ev_loop *loop, ev_periodic *w, int revents) {
-	uint8_t i;
-	time_t curtime = time(NULL);
-	OM_uint32 min, ctxtime;
+void handle_netinit(struct ev_loop * loop, struct conn * client) {
+	pid_t pid;
+	int fds[2];
 
-	for(i = 0; i < 255; i++) {
-		struct conn * cur = clients_ip[i], * last = NULL;
-		while(cur != NULL) {
-			if(curtime - cur->touched >= reapclients) {
-				struct conn * save = cur->ipnext;
-				send_packet(netfd, NULL, &cur->addr, PAC_SHUTDOWN);
-				handle_shutdown(cur);
-				cur = save;
-				continue;
-			}
-			else if(cur->gssstate == GSS_S_COMPLETE && 
-				gss_context_time(&min, cur->context,
-				&ctxtime) != GSS_S_COMPLETE) {
-				struct conn * save = cur->ipnext;
-				send_packet(netfd, NULL, &cur->addr, PAC_SHUTDOWN);
-				handle_shutdown(cur);
-				cur = save;
-				continue;
-			}
-
-			last = cur;
-			cur = cur->ipnext;
-		}
+	if(!netinit_util) {
+		struct netinit ni;
+		gss_buffer_desc out = { 8, &ni };
+		int randfd = open("/dev/urandom", O_RDONLY);
+		read(randfd, ni.mac, sizeof(ni.mac));
+		ni.len = 0;
+		close(randfd);
+		logit(0, "Generating random MAC for %s:%d (%s)",
+			client->ipstr, client->addr.sin_port, client->princname);
+		send_packet(netfd, &out, &client->addr, PAC_NETINIT);
+		return;
 	}
+
+	if(pipe(fds) < 0) {
+		logit(1, "Error creating pipe during netinit %s", strerror(errno));
+		send_packet(netfd, NULL, &client->addr, PAC_SHUTDOWN);
+		handle_shutdown(client);
+		return;
+	}
+
+	if(fcntl(fds[0], F_SETFL, O_NONBLOCK) < 0) {
+		logit(1, "Error setting pipe to non-blocking during netinit %s",
+			strerror(errno));
+		send_packet(netfd, NULL, &client->addr, PAC_SHUTDOWN);
+		handle_shutdown(client);
+		return;
+	}
+
+	client->ni = malloc(sizeof(struct netinit));
+	memset(client->ni, 0, sizeof(struct netinit));
+	client->loop = loop;
+
+	ev_io_init(&client->nipipe, netinit_read_cb, fds[0], EV_READ);
+	client->nipipe.data = client;
+	ev_io_start(loop, &client->nipipe);
+
+	pid = fork();
+	if(pid < 0) {
+		logit(1, "Error forking during netinit %s",
+			strerror(errno));
+		send_packet(netfd, NULL, &client->addr, PAC_SHUTDOWN);
+		handle_shutdown(client);
+		return;
+	}
+	else if(pid == 0) {
+		char portstr[6];
+		sprintf(portstr, "%d", client->addr.sin_port);
+		close(fds[0]);
+		dup2(fds[1], fileno(stdout));
+		if(execlp(netinit_util, netinit_util, client->princname,
+			client->ipstr, portstr, NULL) < 0)
+			exit(-1);
+	}
+	
+	if(verbose)
+		logit(-1, "Waiting for netinit util to finish for %s:%d (%s)",
+			client->ipstr, client->addr.sin_port, client->princname);
+	ev_child_init(&client->nichild, netinit_child_cb, pid, 0);
+	client->nichild.data = client;
+	ev_child_start(loop, &client->nichild);
 }
 
-void handle_gssinit(struct conn * client, gss_buffer_desc * intoken) {
+void handle_gssinit(struct ev_loop * loop, struct conn * client,
+	gss_buffer_desc * intoken) {
 	gss_name_t client_name;
-	gss_OID mech;
 	gss_buffer_desc output, nameout;
 	OM_uint32 flags, lmin, maj, min;
-	struct oc * cur = ochead;
 	int nameeq = 0;
 
 	if(client->gssstate == GSS_S_COMPLETE && 
@@ -156,7 +290,7 @@ void handle_gssinit(struct conn * client, gss_buffer_desc * intoken) {
 	client->context = GSS_C_NO_CONTEXT;
 
 	maj = gss_accept_sec_context(&min, &client->context, srvcreds, intoken,
-					NULL, &client_name, &mech, &output, &flags, NULL, NULL);
+					NULL, &client_name, NULL, &output, &flags, NULL, NULL);
 	if(maj != GSS_S_COMPLETE && maj != GSS_S_CONTINUE_NEEDED) {
 		logit(1, "Error accepting security context from %s", client->ipstr);
 		display_gss_err(maj, min);
@@ -168,27 +302,12 @@ void handle_gssinit(struct conn * client, gss_buffer_desc * intoken) {
 		return;
 	}
 
-	while(cur != NULL &&
-		gss_compare_name(&lmin, cur->client_name,
-			client_name, &nameeq) == GSS_S_COMPLETE &&
-		!nameeq)
-		cur = cur->next;
-
-	gss_display_name(&lmin, client_name, &nameout, NULL);
- 
-	if(!cur) {
-		logit(0, "Connection from %s for %s is not authorized.",
-					nameout.value, client->ipstr);
-		send_packet(netfd, NULL, &client->addr, PAC_SHUTDOWN);
-		handle_shutdown(client);
-	} else {
-		logit(0, "Accepted connection for %s from %s",
-					nameout.value, client->ipstr);
-		send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
-	}
+	logit(0, "Accepted connection for %s from %s",
+		nameout.value, client->ipstr);
+	client->princname = strdup(nameout.value);
 	gss_release_buffer(&lmin, &nameout);
 	gss_release_name(&lmin, &client_name);
-	gss_release_oid(&lmin, &mech);
+	handle_netinit(loop, client);
 }
 
 void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
@@ -220,48 +339,31 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 
-	if(pac == PAC_DATA || pac == PAC_NETINIT) {
-		if(pac == PAC_NETINIT) {
-			uint8_t eh;
-			if(packet.length != sizeof(client->mac)) {
-				if(packet.value)
-					gss_release_buffer(&min, &packet);
-				logit(1, "Invalid netinit packet received");
-			}
-			memcpy(client->mac, packet.value, sizeof(client->mac));
-			gss_release_buffer(&min, &packet);
-			unlink_conn(client, CLIENT_ETHERNET);
-			eh = hash(client->mac, sizeof(client->mac));
-			client->ethernext = clients_ether[eh];
-			clients_ether[eh] = client;
-			send_packet(netfd, NULL, &client->addr, PAC_NOOP);
-		}
-		else if(packet.length > 0) {
-			if(verbose)
-				logit(-1, "Writing %d bytes to tap", packet.length);
-			size_t s = write(tapfd, packet.value, packet.length);
-			if(s < 0)
-				logit(1, "Error writing to tap: %s", strerror(errno));
-			else if(s < packet.length && verbose)
-				logit(1, "Wrote less than expected to tap: %s < %s",
-					s, packet.length);
-			gss_release_buffer(&min, &packet);
-		}
+	if(pac == PAC_DATA && packet.length > 0) {
+		if(verbose)
+			logit(-1, "Writing %d bytes to tap", packet.length);
+		size_t s = write(tapfd, packet.value, packet.length);
+		if(s < 0)
+			logit(1, "Error writing to tap: %s", strerror(errno));
+		else if(s < packet.length && verbose)
+			logit(1, "Wrote less than expected to tap: %s < %s",
+				s, packet.length);
+		gss_release_buffer(&min, &packet);
 	}
 	else if(pac == PAC_GSSINIT)
-		handle_gssinit(client, &packet);
+		handle_gssinit(loop, client, &packet);
+	else if(pac == PAC_NETINIT)
+		handle_netinit(loop, client);
 	else if(pac == PAC_SHUTDOWN)
 		handle_shutdown(client);
 
 	if(packet.value)
 		gss_release_buffer(&min, &packet);
-	client->touched = time(NULL);	
 }
 
 void term_cb(struct ev_loop * l, ev_signal * w, int r) {
 	OM_uint32 min;
 	uint8_t i;
-	struct oc * coc = ochead;
 	
 	for(i = 0; i < 255; i++) {
 		struct conn * c = clients_ip[i];
@@ -276,72 +378,13 @@ void term_cb(struct ev_loop * l, ev_signal * w, int r) {
 	close(tapfd);
 	close(netfd);
 
-	while(coc) {
-		struct oc * n = coc->next;
-		gss_release_name(&min, &coc->client_name);
-		free(coc);
-		coc = n;
-	}
-
 	ev_break(l, EVBREAK_ALL);
-}
-
-void hup_cb(struct ev_loop * l, ev_signal * w, int r) {
-	struct oc * lock = ochead;
-	OM_uint32 maj, min;	
-	FILE * f;
-	char buff[4096];
-	gss_buffer_desc namebuf = { 4096, buff };
-
-	while(ochead) {
-		struct oc * save = lock->next;
-		gss_release_name(&min, &lock->client_name);
-		free(lock);
-		lock = save;
-	}
-
-	f = fopen(authfile, "r");
-	if(f == NULL) {
-		logit(1, "Error opening authorization file: %s", strerror(errno));
-		ev_break(l, EVBREAK_ALL);
-		return;
-	}
-
-	while(fgets(buff, 4096, f) != NULL) {
-		size_t len = strlen(buff);
-		if(buff[len - 1] != '\n') {
-			logit(1, "Invalid name %s", buff);
-			fclose(f);
-			ev_break(l, EVBREAK_ALL);
-			return;
-		}
-
-		lock = malloc(sizeof(struct oc));
-		lock->next = ochead;
-
-		len--;
-		buff[len] = 0;
-		namebuf.length = len;
-		maj = gss_import_name(&min, &namebuf,
-			GSS_C_NT_USER_NAME, &lock->client_name);	
-		if(maj != GSS_S_COMPLETE) {
-			logit(1, "Error importing name %s into auth list.", buff);
-			display_gss_err(maj, min);
-			fclose(f);
-			free(lock);
-			ev_break(l, EVBREAK_ALL);
-		}
-
-		ochead = lock;
-	}
-	fclose(f);
 }
 
 int main(int argc, char ** argv) {
 	int rc;
-	ev_periodic reaper;
 	ev_io tapio, netio;
-	ev_signal hup, term;
+	ev_signal term;
 	struct ev_loop * loop;
 	openlog("gssvpnd", 0, LOG_DAEMON);
 	char ch;
@@ -349,7 +392,7 @@ int main(int argc, char ** argv) {
 	struct oc * cur;
 	uid_t dropto = 0;
 
-	while((ch = getopt(argc, argv, "ds:p:i:va:u:")) != -1) {
+	while((ch = getopt(argc, argv, "ds:p:i:va:u:t:")) != -1) {
 		switch(ch) {
 			case 'v':
 				verbose = 1;
@@ -366,15 +409,12 @@ int main(int argc, char ** argv) {
 					return -1;
 				break;
 			case 'a': {
-				FILE * testfile;
-				authfile = strdup(optarg);
-				testfile = fopen(authfile, "r");
-				if(testfile == NULL) {
-					logit(1, "Error opening authorization file %s",
-						strerror(errno));
+				if(!access(optarg, R_OK|X_OK)) {
+					logit(1, "Unable to access %s for read/execute: %s",
+						optarg, strerror(errno));
 					return -1;
 				}
-				fclose(testfile);
+				netinit_util = strdup(optarg);
 				break;
 			}
 			case 'u': {
@@ -386,6 +426,8 @@ int main(int argc, char ** argv) {
 				}
 				dropto = u->pw_uid;
 			}
+			case 't':
+				reapclients = atoi(optarg);
 			case 'd':
 				daemonize = 1;
 		}
@@ -421,10 +463,6 @@ int main(int argc, char ** argv) {
 	ev_io_start(loop, &netio);
 	ev_io_init(&tapio, tapfd_read_cb, tapfd, EV_READ);
 	ev_io_start(loop, &tapio);
-	ev_periodic_init(&reaper, reap_cb, 0, reapclients, 0);
-	ev_periodic_start(loop, &reaper);
-	ev_signal_init(&hup, hup_cb, SIGHUP);
-	ev_signal_start(loop, &hup);
 	ev_signal_init(&term, term_cb, SIGTERM | SIGQUIT);
 	ev_signal_start(loop, &term);
 	ev_run(loop, 0);

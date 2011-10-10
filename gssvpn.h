@@ -15,12 +15,23 @@ struct conn {
 	unsigned long gssstate;
 	struct sockaddr_in addr;
 	char ipstr[20];
+	char * princname;
 	unsigned char mac[6];
-	time_t touched;
 	struct conn * ipnext;
 	struct conn * ethernext;
+	ev_child nichild;
+	ev_io nipipe;
+	ev_timer conntimeout;
+	struct netinit * ni;
+	struct ev_loop * loop;
 };
 #endif
+
+struct netinit {
+	uint8_t mac[6];
+	uint16_t len;
+	uint8_t payload[4096];
+};
 
 void display_gss_err(OM_uint32 major, OM_uint32 minor);
 int send_packet(int s, gss_buffer_desc * out,
