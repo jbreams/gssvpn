@@ -99,9 +99,6 @@ void netinit_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 
-	if(c->ni->len == sizeof(c->ni->payload))
-		return;
-
 	while((r = read(ios->fd, buf, 1024)) > 0) {
 		size_t tocopy;
 		if(memcmp(c->mac, &ether_null, sizeof(c->mac)) == 0) {
@@ -120,6 +117,10 @@ void netinit_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 
 		memcpy(c->ni->payload + c->ni->len, buf + offset, tocopy);
 		c->ni->len += tocopy;
+		if(c->ni->len == sizeof(c->ni->payload)) {
+			ev_io_stop(loop, &ios);
+			return;
+		}
 	}
 }
 
@@ -258,19 +259,27 @@ void handle_netinit(struct ev_loop * loop, struct conn * client) {
 	ev_io_start(loop, &client->nipipe);
 
 	pid = fork();
-	if(pid < 0) {
-		logit(1, "Error forking during netinit %s",
-			strerror(errno));
-		send_packet(netfd, NULL, &client->addr, PAC_SHUTDOWN);
-		handle_shutdown(client);
-		return;
-	}
-	else if(pid == 0) {
+	if(pid == 0) {
 		char portstr[6];
+		uint8_t i;
+
 		sprintf(portstr, "%d", client->addr.sin_port);
 		close(fds[0]);
+		close(tapfd);
+		close(netfd);
+		for(i = 0; i < 255; i++) {
+			struct conn * c = clients_ip[i];
+			while(c) {
+				struct conn * save = c->ipnext;
+				if(c->context != GSS_C_NO_CONTEXT)
+					gss_delete_sec_context(&min, &c->context, NULL);
+				free(c);
+				c = save;
+			}
+		}
+
 		dup2(fds[1], fileno(stdout));
-		if(execlp(netinit_util, netinit_util, client->princname,
+		if(execl(netinit_util, netinit_util, client->princname,
 			client->ipstr, portstr, NULL) < 0)
 			exit(-1);
 	}

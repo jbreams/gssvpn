@@ -15,16 +15,15 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <ifaddrs.h>
 #include <ev.h>
 #include "gssvpn.h"
 
 gss_ctx_id_t context = GSS_C_NO_CONTEXT;
 OM_uint32 gssstate = GSS_S_CONTINUE_NEEDED;
-int tapfd, netfd, reap = 30, verbose = 0;
+int tapfd, netfd, verbose = 0;
 struct sockaddr_in server;
-char * tapdev, *service, *hostname;
-extern struct pbuff * packets[255];
+char * tapdev, *service, *hostname, *netinit_util = NULL;
+ev_child netinit_child;
 
 gss_ctx_id_t get_context(struct sockaddr_in* peer) {
 	if(gssstate == GSS_S_COMPLETE)
@@ -32,31 +31,76 @@ gss_ctx_id_t get_context(struct sockaddr_in* peer) {
 	return NULL;
 }
 
-int do_netinit() {
-	struct ifaddrs * ifp, *cifp;
-	char mac[6];
-	gss_buffer_desc macout = { 6, mac };
-	int rc;
+void netinit_cb(struct ev_loop * loop, ev_child * c, int revents) {
+	if(c->rstatus == 0)
+		return;
 
-	if(getifaddrs(&ifp) < 0) {
-		logit(1, "Error getting list of interfaces %m.");
+	logit(1, "Received error code from netinit util %d", c->rstatus);
+	send_packet(netfd, NULL, &server, PAC_SHUTDOWN);
+	ev_child_stop(loop, &netinit_child);
+	ev_break(loop, EVBREAK_ALL);
+}
+
+int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
+	struct netinit ni;
+	struct ifreq ifr;
+	pid_t pid;
+
+	if(in->length > sizeof(ni)) {
+		logit(1, "Received a netinit packet %d bytes too long",
+			in->length - sizeof(ni));
 		return -1;
 	}
-	
-	for(cifp = ifp; cifp && strcmp(cifp->ifa_name, tapdev) != 0;
-					cifp = cifp->ifa_next);
-	if(!cifp) {
-		logit(1, "Couldn't find %s in list of interfaces", tapdev);
-		freeifaddrs(ifp);
+
+	memcpy(&ni, in.value, in.length);
+	memset(&ifr, 0, sizeof(ifr));
+	strncpy(ifr.ifr_name, tapdev, IFNAMSIZ);
+	ifr.ifr_addr.sa_family = AF_LINK;
+	ifr.ifr_addr.sa_len = sizeof(ni.mac);
+	memcpy(ifr.ifr_addr.sa_data, ni.mac, sizeof(ni.mac));
+	if(ioctl(tapfd, SIOCSIFLLADDR, &ifr) < 0) {
+		logit(1, "Error setting MAC address for %s: %s", tapdev,
+			strerror(errno));
 		return -1;
 	}
 
-	struct sockaddr_dl* sdl = (struct sockaddr_dl*)cifp->ifa_addr;
-	memcpy(mac, LLADDR(sdl), sizeof(mac));
-	freeifaddrs(ifp);
+	if(!ni.len)
+		return 0;
 
-	send_packet(netfd, &macout, &server, PAC_NETINIT);
-	return rc;
+	if(!netinit_util) {
+		if(verbose)
+			logit(-1, "Received %d bytes of netinit data, but no netinit util.",
+				ni.length);
+		return 0;
+	}
+
+	pid = fork();
+	if(pid == 0) {
+		char * lock = ni.payload;
+		char ** args = malloc(sizeof(char*)) * 256;
+		int argcount = 0;
+		close(tapfd);
+		close(netfd);
+		gss_delete_sec_context(&min, &context, GSS_C_NO_BUFFER);
+
+		while(lock - ni.payload < ni.len && argcount < 255) {
+			char * save = lock;
+			while(*lock != '\n' && lock - ni.payload < ni.len) lock++;
+			if(*lock == '\n') {
+				*lock = 0;
+				args[argcount++] = save;
+				lock++;
+			}
+		}
+		args[argcount] = NULL;
+		if(execv(netinit_util, args) < 0)
+			exit(-1);
+	} else {
+		ev_child_init(&netinit_child, netinit_cb, pid, 0);
+		ev_child_start(loop, &netinit_child);
+	}
+
+	return 0;
 }
 
 int do_gssinit(gss_buffer_desc * in) {
@@ -122,7 +166,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 	else if(pac == PAC_NETINIT)
-		do_netinit();
+		do_netinit(&packet);
 	else if(pac == PAC_GSSINIT)
 		do_gssinit(&packet);
 	else if(pac == PAC_SHUTDOWN)
@@ -231,3 +275,4 @@ int main(int argc, char ** argv) {
 
 	return 0;
 }
+
