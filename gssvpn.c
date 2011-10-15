@@ -25,11 +25,13 @@
 
 gss_ctx_id_t context = GSS_C_NO_CONTEXT;
 OM_uint32 gssstate = GSS_S_CONTINUE_NEEDED;
-int tapfd, netfd, verbose = 0;
+int tapfd, netfd, verbose = 0, netinit = 0;
 struct sockaddr_in server;
 char * tapdev, *service, *hostname, *netinit_util = NULL;
 ev_child netinit_child;
+ev_timer init_retry;
 int daemonize = 0;
+ev_timestamp last_init_activity;
 
 gss_ctx_id_t get_context(struct sockaddr_in* peer) {
 	if(gssstate == GSS_S_COMPLETE)
@@ -37,9 +39,32 @@ gss_ctx_id_t get_context(struct sockaddr_in* peer) {
 	return NULL;
 }
 
+void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
+	ev_tstamp now = ev_now (EV_A);
+	ev_tstamp timeout = last_activity + 10;
+	if(timeout < now) {
+		if(gssstate != GSS_S_COMPLETE) {
+			logit(1, "Did not receive GSS packet from server. Retrying.");
+			do_gssinit(NULL);
+		}
+		else if(netinit != 1) {
+			logit(1, "Did not receive netinit packet from server. Retrying.");
+			send_packet(netfd, NULL, &server, PAC_NETINIT);
+		}
+		else
+			ev_timer_stop(loop, w);
+	} else {
+		w->repeat = timeout - now;
+		ev_timer_again(loop, w);	
+	}
+}
+
 void netinit_cb(struct ev_loop * loop, ev_child * c, int revents) {
-	if(c->rstatus == 0)
+	if(c->rstatus == 0) {
+		init = 1;
+		logit(0, "Netinit okay. Starting normal operation.");
 		return;
+	}
 
 	logit(1, "Received error code from netinit util %d", c->rstatus);
 	send_packet(netfd, NULL, &server, PAC_SHUTDOWN);
@@ -75,16 +100,21 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 		return -1;
 	}
 
-	if(!ni.len)
-		return 0;
-
-	if(!netinit_util) {
-		if(verbose)
-			logit(-1, "Received %d bytes of netinit data, but no netinit util.",
-				ni.len);
+	if(!ni.len) {
+		logit(-1, "Received no netinit data, but that's okay! Starting normal operation.");
+		init = 1;
 		return 0;
 	}
 
+	if(!netinit_util) {
+		logit(0, "Received %d bytes of netinit data, but no netinit util. Starting normal operation.",
+			ni.len);
+		init = 1;
+		return 0;
+	}
+
+	init = 0;
+	last_init_activity = ev_now(loop);
 	pid = fork();
 	if(pid == 0) {
 		uint8_t * lock = netinit_util + (strlen(netinit_util) - 1);
@@ -125,11 +155,11 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 
 int do_gssinit(gss_buffer_desc * in) {
 	gss_name_t target_name;
-	char prodid[255];
-	gss_buffer_desc tokenout = { 255, &prodid };
+	char prodid[512];
+	gss_buffer_desc tokenout = { 512, &prodid };
 	OM_uint32 min;
 
-	tokenout.length = snprintf(prodid, 255, "%s@%s", service, hostname);
+	tokenout.length = snprintf(prodid, 512, "%s@%s", service, hostname);
 	gssstate = gss_import_name(&min, &tokenout, 
 					(gss_OID)GSS_C_NT_HOSTBASED_SERVICE,
 					&target_name);
@@ -174,7 +204,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	
 	if(pac == PAC_DATA) {
 		if(verbose)
-			logit(0, "Writing %d bytes to TAP", packet.length);
+			logit(-1, "Writing %d bytes to TAP", packet.length);
 
 		size_t s = write(tapfd, packet.value, packet.length);
 		if(s < 0)
@@ -285,6 +315,10 @@ int main(int argc, char ** argv) {
 		close(netfd);
 		return -1;
 	}
+
+	ev_timer_init(&init_retry, init_retry_cb, 10, 0);
+	last_init_activity = ev_now(loop);
+	ev_timer_start(loop, &init_retry);
 
 	ev_run(loop, 0);
 
