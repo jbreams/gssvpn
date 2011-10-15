@@ -12,6 +12,9 @@
 #if defined(HAVE_IF_TUN)
 #include <linux/if_tun.h>
 #endif
+#ifdef HAVE_LINUX_SOCKIOS_H
+#include <linux/sockios.h>
+#endif
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -56,10 +59,16 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	memcpy(&ni, in->value, in->length);
 	memset(&ifr, 0, sizeof(ifr));
 	strncpy(ifr.ifr_name, tapdev, IFNAMSIZ);
+#ifdef SIOCSIFHWADDR
+	memcpy(ifr.ifr_hwaddr.sa_data, ni.mac, sizeof(ni.mac));
+	ifr.ifr_addr.sa_len = sizeof(ni.mac);
+	if(ioctl(tapfd, SIOCSIFHWADDR, &ifr) < 0) {
+#else
+	memcpy(ifr.ifr_addr.sa_data, ni.mac, sizeof(ni.mac));
 	ifr.ifr_addr.sa_family = AF_LINK;
 	ifr.ifr_addr.sa_len = sizeof(ni.mac);
-	memcpy(ifr.ifr_addr.sa_data, ni.mac, sizeof(ni.mac));
 	if(ioctl(tapfd, SIOCSIFLLADDR, &ifr) < 0) {
+#endif
 		logit(1, "Error setting MAC address for %s: %s", tapdev,
 			strerror(errno));
 		return -1;

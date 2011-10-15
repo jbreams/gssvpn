@@ -13,6 +13,8 @@ AC_CHECK_HEADER([gssapi/gssapi.h], [],
 	[AC_MSG_ERROR([Requires GSSAPI header])])
 AC_CHECK_HEADER([linux/if_tun.h],
 	AC_DEFINE([HAVE_IF_TUN], [1], [Uses Linux TUN/TAP Driver]), [], [])
+AC_CHECK_HEADER([linux/sockios.h],
+	AC_DEFINE([HAVE_LINUX_SOCKIOS_H], [], [Uses Linux ioctl]), [], [])
 
 AC_SEARCH_LIBS([gss_accept_sec_context], [gssapi gssapi_krb5])
 AC_SEARCH_LIBS([gethostbyname], [resolve nsl])
