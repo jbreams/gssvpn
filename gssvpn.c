@@ -41,13 +41,13 @@
 
 gss_ctx_id_t context = GSS_C_NO_CONTEXT;
 OM_uint32 gssstate = GSS_S_CONTINUE_NEEDED;
-int tapfd, netfd, verbose = 0, netinit = 0;
+int tapfd, netfd, verbose = 0, init = 0;
 struct sockaddr_in server;
 char * tapdev, *service, *hostname, *netinit_util = NULL;
 ev_child netinit_child;
 ev_timer init_retry;
 int daemonize = 0;
-ev_timestamp last_init_activity;
+ev_tstamp last_init_activity;
 
 gss_ctx_id_t get_context(struct sockaddr_in* peer) {
 	if(gssstate == GSS_S_COMPLETE)
@@ -57,13 +57,13 @@ gss_ctx_id_t get_context(struct sockaddr_in* peer) {
 
 void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
 	ev_tstamp now = ev_now (EV_A);
-	ev_tstamp timeout = last_activity + 10;
+	ev_tstamp timeout = last_init_activity + 10;
 	if(timeout < now) {
 		if(gssstate != GSS_S_COMPLETE) {
 			logit(1, "Did not receive GSS packet from server. Retrying.");
 			do_gssinit(NULL);
 		}
-		else if(netinit != 1) {
+		else if(init != 1) {
 			logit(1, "Did not receive netinit packet from server. Retrying.");
 			send_packet(netfd, NULL, &server, PAC_NETINIT);
 		}
