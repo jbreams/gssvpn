@@ -115,13 +115,15 @@ void netinit_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	while((r = read(ios->fd, buf, 1024)) > 0) {
 		size_t tocopy;
 		if(memcmp(c->mac, &ether_null, sizeof(c->mac)) == 0) {
+			int i;
 			struct ether_addr * laddr;
 			uint8_t * lock = buf;
 			while(*lock != '\n') lock++;
 			*lock++ = 0;
-			laddr = ether_aton(buf);
-			memcpy(c->mac, laddr, sizeof(c->mac));
 			offset = (lock - buf);
+			for(i = 0; i < sizeof(c->mac); i++) {
+				c->mac[i] = (long)strtol(buf+(3*i), NULL, 16);
+			}
 		}
 		tocopy = r - offset;
 
