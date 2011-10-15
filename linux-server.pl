@@ -20,7 +20,7 @@ my $princname = shift @ARGV;
 my $remoteip = shift @ARGV;
 my $remoteport = shift @ARGV;
 
-my $ipmatch = "(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])";
+my $ipmatch = "((([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]))+";
 my @routes = ( );
 my @netroutes = ( );
 my $subnet;
@@ -30,19 +30,19 @@ my $clientmac;
 
 open my $conf, '<', '/etc/gssvpn.conf' or die "Cannot open gssvpn config!";
 while(<$conf>) {
-	if($_ =~ /route\s+$ipmatch(\/(\d|[1-2]\d|3[0-2]))/) {
+	if($_ =~ /route\s+$ipmatch(\/(\d|[1-2]\d|3[0-2]){1,2})?\s*$/) {
 		my $ip = $1;
-		my $cidr = $4;
+		my $cidr = $5;
 		if($cidr) {
 			push @netroutes, "$ip$cidr";
 		} else {
 			push @routes, $ip;
 		}
 	}
-	elsif($_ =~ /gateway\s+$ipmatch/) {
+	elsif($_ =~ /gateway\s+$ipmatch\s*$/) {
 		$gateway = $1;
 	}
-	elsif($_ =~ /subnet\s+$ipmatch/) {
+	elsif($_ =~ /subnet\s+$ipmatch\s*$/) {
 		$subnet = $1;
 	}
 	elsif($_ =~ /user\s+([^\s^\{]+)\s*{/) {
@@ -55,7 +55,7 @@ while(<$conf>) {
 		undef $inuser;
 		$clientip && $subnet && last;
 	}
-	elsif($inuser && $_ =~ /ip\s+$ipmatch/) {
+	elsif($inuser && $_ =~ /ip\s+($ipmatch)\s*$/) {
 		$clientip = $1;
 	}
 	elsif($inuser && $_ =~ /mac\s+((?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2})/i) {
