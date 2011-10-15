@@ -332,6 +332,7 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 		return;
 	}
 
+	gss_display_name(&lmin, client_name, &nameout, NULL);
 	logit(0, "Accepted connection for %s from %s",
 		nameout.value, client->ipstr);
 	client->princname = strdup(nameout.value);
@@ -439,7 +440,7 @@ int main(int argc, char ** argv) {
 					return -1;
 				break;
 			case 'a': {
-				if(!access(optarg, R_OK|X_OK)) {
+				if(access(optarg, R_OK|X_OK) < 0) {
 					logit(1, "Unable to access %s for read/execute: %s",
 						optarg, strerror(errno));
 					return -1;

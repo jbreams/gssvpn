@@ -269,7 +269,7 @@ int main(int argc, char ** argv) {
 
 	memset(&server, 0, sizeof(struct sockaddr_in));
 	
-	while((ch = getopt(argc, argv, "vh:p:s:i:")) != -1) {
+	while((ch = getopt(argc, argv, "vh:p:s:i:a:")) != -1) {
 		switch(ch) {
 			case 'v':
 				verbose = 1;
@@ -286,6 +286,15 @@ int main(int argc, char ** argv) {
 			case 'i':
 				tapdev = strdup(optarg);
 				break;
+			case 'a': {
+				if(access(optarg, R_OK|X_OK) < 0) {
+					logit(1, "Unable to access %s for read/execute: %s",
+						optarg, strerror(errno));
+					return -1;
+				}
+				netinit_util = strdup(optarg);
+				break;
+			}
 		}
 	}
 
