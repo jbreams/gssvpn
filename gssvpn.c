@@ -52,7 +52,7 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 		return -1;
 	}
 
-	memcpy(&ni, in.value, in.length);
+	memcpy(&ni, in->value, in->length);
 	memset(&ifr, 0, sizeof(ifr));
 	strncpy(ifr.ifr_name, tapdev, IFNAMSIZ);
 	ifr.ifr_addr.sa_family = AF_LINK;
@@ -70,21 +70,24 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	if(!netinit_util) {
 		if(verbose)
 			logit(-1, "Received %d bytes of netinit data, but no netinit util.",
-				ni.length);
+				ni.len);
 		return 0;
 	}
 
 	pid = fork();
 	if(pid == 0) {
-		char * lock = ni.payload;
-		char ** args = malloc(sizeof(char*)) * 256;
+		uint8_t * lock = ni.payload;
+		char ** args = malloc(sizeof(char*)* 256);
 		int argcount = 0;
+		OM_uint32 min;
+
 		close(tapfd);
 		close(netfd);
 		gss_delete_sec_context(&min, &context, GSS_C_NO_BUFFER);
 
+		args[argcount++] = netinit_util;
 		while(lock - ni.payload < ni.len && argcount < 255) {
-			char * save = lock;
+			uint8_t * save = lock;
 			while(*lock != '\n' && lock - ni.payload < ni.len) lock++;
 			if(*lock == '\n') {
 				*lock = 0;
@@ -166,7 +169,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 	else if(pac == PAC_NETINIT)
-		do_netinit(&packet);
+		do_netinit(loop, &packet);
 	else if(pac == PAC_GSSINIT)
 		do_gssinit(&packet);
 	else if(pac == PAC_SHUTDOWN)

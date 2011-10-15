@@ -1,0 +1,33 @@
+AC_INIT
+AC_INIT_AUTOMAKE([gssvpn,0.5])
+AC_CONFIG_HEADERS([config.h libev/config.h])
+
+AC_PROG_INSTALL
+AC_PROG_LIBTOOL
+
+AC_INCLUDES_DEFAULT
+AC_CHECK_HEADERS([fcntl.h net/if.h netdb.h netinit/in.h pwd.h
+	sys/ioctl syslog.h net/ethernet.h arpa/inet.h])
+AC_CHECK_HEADER([gssapi/gssapi.h], [],
+	[AC_MSG_ERROR([Requires GSSAPI header])]))
+AC_CHECK_HEADER([linux/if_tun.h], [AC_DEFINE([HAVE_IF_TUN])], [], [])
+
+AC_SEARCH_LIBS([gss_accept_sec_context], [gssapi gssapi_krb5])
+AC_SEARCH_LIBS([gethostbyname], [resolve nsl])
+AC_SEARCH_LIBS([socket], [socket])
+
+AC_FUNC_FORK
+AC_FUNC_MALLOC
+AC_FUNC_MEMCMP
+
+AC_CHECK_FUNCS([gss_accept_sec_context gss_init_sec_context
+	gss_wrap gss_unwrap gss_del_sec_context gss_release_buffer
+	gss_acquire_creds], [], [AC_MSG_ERROR([Missing GSSAPI functions])])
+AC_CHECK_FUNCS([ioctl setsockopt bind recvfrom sendto socket])
+
+m4_include([libev/libev.m4])
+
+AC_CHECK_LIBS([gss_accept_sec_context], [gssapi gssapi_krb5])
+
+AC_CONFIG_FILES([Makefile])
+AC_OUTPUT

@@ -118,7 +118,7 @@ void netinit_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		memcpy(c->ni->payload + c->ni->len, buf + offset, tocopy);
 		c->ni->len += tocopy;
 		if(c->ni->len == sizeof(c->ni->payload)) {
-			ev_io_stop(loop, &ios);
+			ev_io_stop(loop, ios);
 			return;
 		}
 	}
@@ -219,7 +219,7 @@ void handle_netinit(struct ev_loop * loop, struct conn * client) {
 	pid_t pid;
 	int fds[2];
 
-	if(client->ci)
+	if(client->ni)
 		return;
 
 	if(!netinit_util) {
@@ -261,7 +261,14 @@ void handle_netinit(struct ev_loop * loop, struct conn * client) {
 	pid = fork();
 	if(pid == 0) {
 		char portstr[6];
+		char * filename = netinit_util + (strlen(netinit_util) - 1);
 		uint8_t i;
+		OM_uint32 min;
+
+		while(*filename != '/' && filename != netinit_util)
+			filename--;
+		if(*filename == '/')
+			filename++;
 
 		sprintf(portstr, "%d", client->addr.sin_port);
 		close(fds[0]);
@@ -279,7 +286,7 @@ void handle_netinit(struct ev_loop * loop, struct conn * client) {
 		}
 
 		dup2(fds[1], fileno(stdout));
-		if(execl(netinit_util, netinit_util, client->princname,
+		if(execl(netinit_util, filename, client->princname,
 			client->ipstr, portstr, NULL) < 0)
 			exit(-1);
 	}

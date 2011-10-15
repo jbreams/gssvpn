@@ -135,12 +135,10 @@ int open_net(short port) {
 	struct sockaddr_in me;
 	int s, rc;
 
-#ifdef HAVE_LZO_H
 	if(lzo_init() != LZO_E_OK) {
 		logit(1, "Error initialzing LZO library.");
 		return -1;
 	}
-#endif
 
 	s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if(s < 0) {
@@ -161,7 +159,7 @@ int open_net(short port) {
 		return -1;
 	}
 
-#ifdef HAVE_IP_MTU_DISCOVER
+#ifdef IP_MTU_DISCOVER
 	rc = IP_PMTUDISC_DO;
 	setsockopt(s, IPPROTO_UDP, IP_MTU_DISCOVER, &rc, sizeof(int));
 #endif
