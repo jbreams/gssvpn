@@ -1,3 +1,4 @@
+#include "config.h"
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
@@ -8,12 +9,13 @@
 #include <gssapi/gssapi.h>
 #include <unistd.h>
 #include <net/if.h>
-#include <net/if_dl.h>
 #if defined(HAVE_IF_TUN)
 #include <linux/if_tun.h>
 #endif
 #ifdef HAVE_LINUX_SOCKIOS_H
 #include <linux/sockios.h>
+#else
+#include <net/if_dl.h>
 #endif
 #include <string.h>
 #include <stdlib.h>
@@ -61,7 +63,6 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	strncpy(ifr.ifr_name, tapdev, IFNAMSIZ);
 #ifdef SIOCSIFHWADDR
 	memcpy(ifr.ifr_hwaddr.sa_data, ni.mac, sizeof(ni.mac));
-	ifr.ifr_addr.sa_len = sizeof(ni.mac);
 	if(ioctl(tapfd, SIOCSIFHWADDR, &ifr) < 0) {
 #else
 	memcpy(ifr.ifr_addr.sa_data, ni.mac, sizeof(ni.mac));
