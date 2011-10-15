@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include "libev/ev.h"
 #define GSSVPN_SERVER
 #include "gssvpn.h"
 
@@ -39,7 +40,6 @@ struct conn * get_conn(struct sockaddr_in * peer) {
 	ipstr = inet_ntoa(peer->sin_addr);
 	strcpy(client->ipstr, ipstr);
 	client->gssstate = GSS_S_CONTINUE_NEEDED;
-	client->touched = time(NULL);
 	return client;
 }
 

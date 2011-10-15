@@ -17,11 +17,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <syslog.h>
-#ifdef DARWIN
-#include <ev.h>
-#else
-#include <libev/ev.h>
-#endif
+#include "libev/ev.h"
 #define GSSVPN_SERVER
 #include "gssvpn.h"
 
@@ -169,7 +165,7 @@ void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 
 	ev_timer_init(&c->conntimeout, conn_timeout_cb, timeout, 0);
 	c->conntimeout.data = c;
-	ev_start(loop, &c->conntimeout);
+	ev_timer_start(loop, &c->conntimeout);
 
 	c->ni->len = htons(c->ni->len);
 	out.length = tosend;
@@ -224,11 +220,18 @@ void handle_netinit(struct ev_loop * loop, struct conn * client) {
 
 	if(!netinit_util) {
 		struct netinit ni;
+		uint8_t eh;
+
 		gss_buffer_desc out = { 8, &ni };
 		int randfd = open("/dev/urandom", O_RDONLY);
 		read(randfd, ni.mac, sizeof(ni.mac));
 		ni.len = 0;
 		close(randfd);
+		memcpy(client->mac, ni.mac, sizeof(ni.mac));
+		eh = hash(client->mac, sizeof(client->mac));
+		unlink_conn(client, CLIENT_ETHERNET);
+		client->ethernext = clients_ether[eh];
+		clients_ether[eh] = client;
 		logit(0, "Generating random MAC for %s:%d (%s)",
 			client->ipstr, client->addr.sin_port, client->princname);
 		send_packet(netfd, &out, &client->addr, PAC_NETINIT);
@@ -265,25 +268,13 @@ void handle_netinit(struct ev_loop * loop, struct conn * client) {
 		uint8_t i;
 		OM_uint32 min;
 
+		close(netfd);
+		close(tapfd);
+		close(fds[0]);
 		while(*filename != '/' && filename != netinit_util)
 			filename--;
 		if(*filename == '/')
 			filename++;
-
-		sprintf(portstr, "%d", client->addr.sin_port);
-		close(fds[0]);
-		close(tapfd);
-		close(netfd);
-		for(i = 0; i < 255; i++) {
-			struct conn * c = clients_ip[i];
-			while(c) {
-				struct conn * save = c->ipnext;
-				if(c->context != GSS_C_NO_CONTEXT)
-					gss_delete_sec_context(&min, &c->context, NULL);
-				free(c);
-				c = save;
-			}
-		}
 
 		dup2(fds[1], fileno(stdout));
 		if(execl(netinit_util, filename, client->princname,
@@ -473,7 +464,6 @@ int main(int argc, char ** argv) {
 	if(dropto)
 		setuid(dropto);
 	
-	hup_cb(loop, NULL, 0);
 	if(daemonize)
 		daemon(0, 0);
 	

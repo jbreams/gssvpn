@@ -18,8 +18,7 @@
 #include <errno.h>
 #include <syslog.h>
 #include <stdarg.h>
-#include <lzo/lzo1x.h>
-#include <lzo/lzoconf.h>
+#include "minilzo/minilzo.h"
 #include "gssvpn.h"
 
 extern int daemonize;
@@ -31,7 +30,7 @@ struct header {
 	uint8_t pac;
 };
 char pbuff[8192];
-uint8_t lzowrk[LZO1X_999_MEM_COMPRESS];
+uint8_t lzowrk[LZO1X_1_MEM_COMPRESS];
 
 void logit(int level, char * fmt, ...) {
 	int err;
@@ -259,11 +258,11 @@ int send_packet(int s, gss_buffer_desc * out,
 			return -1;
 		}
 
-		rc = lzo1x_999_compress(pout.value, pout.length,
+		rc = lzo1x_1_compress(pout.value, pout.length,
 			pbuff + sizeof(ph), &tosend, lzowrk);
 		gss_release_buffer(&min, &pout);
 	} else	
-		rc = lzo1x_999_compress(out->value, out->length,
+		rc = lzo1x_1_compress(out->value, out->length,
 			pbuff + sizeof(ph), &tosend, lzowrk);
 
 	if(rc != 0) {

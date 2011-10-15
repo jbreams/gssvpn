@@ -15,7 +15,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <ev.h>
+#include "libev/ev.h"
 #include "gssvpn.h"
 
 gss_ctx_id_t context = GSS_C_NO_CONTEXT;
@@ -24,6 +24,7 @@ int tapfd, netfd, verbose = 0;
 struct sockaddr_in server;
 char * tapdev, *service, *hostname, *netinit_util = NULL;
 ev_child netinit_child;
+int daemonize = 0;
 
 gss_ctx_id_t get_context(struct sockaddr_in* peer) {
 	if(gssstate == GSS_S_COMPLETE)
@@ -76,16 +77,22 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 
 	pid = fork();
 	if(pid == 0) {
-		uint8_t * lock = ni.payload;
+		uint8_t * lock = netinit_util + (strlen(netinit_util) - 1);
 		char ** args = malloc(sizeof(char*)* 256);
 		int argcount = 0;
 		OM_uint32 min;
 
 		close(tapfd);
 		close(netfd);
-		gss_delete_sec_context(&min, &context, GSS_C_NO_BUFFER);
+
+		while(*lock != '/' && lock != netinit_util)
+			lock--;
+		if(*lock == '/')
+			lock++;
 
 		args[argcount++] = netinit_util;
+		args[argcount++] = tapdev;
+		lock = ni.payload;
 		while(lock - ni.payload < ni.len && argcount < 255) {
 			uint8_t * save = lock;
 			while(*lock != '\n' && lock - ni.payload < ni.len) lock++;
