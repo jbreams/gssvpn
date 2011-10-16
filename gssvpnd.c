@@ -157,8 +157,8 @@ void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 	uint8_t eh;
 
 	ev_child_stop(loop, ioc);
-	if(ev_is_active(&client->nipipe))
-		ev_io_stop(loop, &client->nipipe);
+	if(ev_is_active(&c->nipipe))
+		ev_io_stop(loop, &c->nipipe);
 
 	if(ioc->rstatus != 0) {
 		logit(0, "Rejecting client %s:%d (%s)", c->ipstr,
