@@ -46,8 +46,11 @@ struct sockaddr_in server;
 char * tapdev, *service, *hostname, *netinit_util = NULL;
 ev_child netinit_child;
 ev_timer init_retry;
+ev_signal term;
 int daemonize = 0;
 ev_tstamp last_init_activity;
+char * netinit_args[258];
+struct netinit ni;
 
 gss_ctx_id_t get_context(struct sockaddr_in* peer) {
 	if(gssstate == GSS_S_COMPLETE)
@@ -78,24 +81,23 @@ void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
 }
 
 void netinit_cb(struct ev_loop * loop, ev_child * c, int revents) {
+	ev_child_stop(loop, c);
 	if(c->rstatus == 0) {
 		init = 1;
 		logit(0, "Netinit okay. Starting normal operation.");
-		ev_child_stop(loop, &netinit_child);
 		return;
 	}
 
 	logit(1, "Received error code from netinit util %d", c->rstatus);
 	send_packet(netfd, NULL, &server, PAC_SHUTDOWN);
-	ev_child_stop(loop, &netinit_child);
 	ev_break(loop, EVBREAK_ALL);
 }
 
 int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
-	struct netinit ni;
+	uint8_t * lock;
 	struct ifreq ifr;
 	pid_t pid;
-	int ts;
+	int ts, argc = 0;
 
 	if(in->length > sizeof(ni)) {
 		logit(1, "Received a netinit packet %d bytes too long",
@@ -139,34 +141,32 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	init = 0;
 	last_init_activity = ev_now(loop);
 
+	lock = netinit_util + (strlen(netinit_util) - 1);
+	while(*lock != '/' && lock != netinit_util)
+		lock--;
+	if(*lock == '/')
+		lock++;
+	netinit_args[argc++] = lock;
+	netinit_args[argc++] = tapdev;
+	netinit_args[argc++] = "init";
+
+	lock = ni.payload;
+	while(lock - ni.payload < ni.len && argc < 255) {
+		uint8_t * save = lock;
+		while(*lock != '\n' && lock - ni.payload < ni.len) lock++;
+		if(*lock == '\n') {
+			*lock = 0;
+			netinit_args[argc++] = save;
+			lock++;
+		}
+	}
+	netinit_args[argc] = NULL;
+
 	pid = fork();
 	if(pid == 0) {
-		uint8_t * lock = netinit_util + (strlen(netinit_util) - 1);
-		char * args[257];
-		int argc = 0;
-
-		while(*lock != '/' && lock != netinit_util)
-			lock--;
-		if(*lock == '/')
-			lock++;
-
-		args[argc++] = lock;
-		args[argc++] = tapdev;
-		lock = ni.payload;
-		while(lock - ni.payload < ni.len && argc < 255) {
-			uint8_t * save = lock;
-			while(*lock != '\n' && lock - ni.payload < ni.len) lock++;
-			if(*lock == '\n') {
-				*lock = 0;
-				args[argc++] = save;
-				lock++;
-			}
-		}
-		args[argc] = NULL;
-
 		close(tapfd);
 		close(netfd);
-		if(execv(netinit_util, args) < 0)
+		if(execv(netinit_util, netinit_args) < 0)
 			exit(errno);
 	} else {
 		ev_child_init(&netinit_child, netinit_cb, pid, 0);
@@ -266,6 +266,11 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	return;
 }
 
+void term_cb(struct ev_loop * loop, ev_signal * ios, int revents) {
+	ev_signal_stop(loop, ios);
+	ev_break(loop, EVBREAK_ALL);
+}
+
 int main(int argc, char ** argv) {
 	ev_io tapio, netio;
 	struct ev_loop * loop;
@@ -341,6 +346,8 @@ int main(int argc, char ** argv) {
 	ev_io_start(loop, &netio);
 	ev_io_init(&tapio, tapfd_read_cb, tapfd, EV_READ);
 	ev_io_start(loop, &tapio);
+	ev_signal_init(&term, term_cb, SIGTERM|SIGQUIT);
+	ev_signal_start(loop, &term);
 
 	if(do_gssinit(NULL) < 0) {
 		close(tapfd);
@@ -353,6 +360,17 @@ int main(int argc, char ** argv) {
 	ev_timer_start(loop, &init_retry);
 
 	ev_run(loop, 0);
+	if(netinit_util) {
+		pid_t pid;
+		netinit_args[2] = "shutdown";
+		pid = fork();
+		if(pid == 0) {
+			close(tapfd);
+			close(netfd);
+			if(execv(netinit_util, netinit_args) < 0)
+				exit(errno);
+		}
+	}
 
 	close(tapfd);
 	close(netfd);

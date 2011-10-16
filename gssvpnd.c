@@ -369,7 +369,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 
 	if(pac == PAC_DATA && memcmp(client->mac, &ether_empty,
 		sizeof(ether_empty)) == 0) {
-		send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
+		handle_netinit(loop, client);		
 		if(packet.length)
 			gss_release_buffer(&min, &packet);
 		return;

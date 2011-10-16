@@ -16,8 +16,11 @@
 #
 
 my $ipaddr = my $subnet = my $gateway = my $dhcp = undef;
-my $tapdev = shift @ARGV;
+my $tapdev = shift;
+my $action = shift;
 my @routenets = my @routehosts = ( );
+
+$action =~ /shutdown/ && exit 0;
 
 while (@ARGV) {
 	$_ = shift;
@@ -34,7 +37,7 @@ while (@ARGV) {
 		system "ipconfig set $tapdev DHCP";
 		$dhcp = 1;
 	}
-	elsif($_ =~ /routenet/) {
+	elsif($_ =~ /netroute/) {
 		push @routenets, shift;
 	}
 	elsif($_ =~ /route/) {
@@ -46,7 +49,7 @@ if(!$dhcp) {
 	if(!$ipaddr || !$subnet) {
 		exit 1;
 	}
-	system "ipconfig set $tapdev MANUAL $ipaddr $subnet";
+	system "ifconfig $tapdev inet $ipaddr netmask $subnet";
 }
 
 system "ipconfig waitall";
@@ -55,6 +58,8 @@ if(!$gateway) {
 	exit 0;
 }
 
+system "ping -c 1 -n $gateway";
+
 foreach my $dest (@routenets) {
 	system "route add -net $dest $gateway";
 }
@@ -62,3 +67,4 @@ foreach my $dest (@routenets) {
 foreach my $dest (@routehosts) {
 	system "route add -host $dest $gateway";
 }
+
