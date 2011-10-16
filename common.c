@@ -193,7 +193,7 @@ int recv_packet(int s, gss_buffer_desc * out,
 	gss_ctx_id_t ctx;
 	int rc;
 
-	size_t r = recvfrom(s, pbuff, sizeof(pbuff), 0,
+	ssize_t r = recvfrom(s, pbuff, sizeof(pbuff), 0,
 					(struct sockaddr*)peer, &ral);
 	if(r < 0 || r < sizeof(ph)) {
 		if(errno == EAGAIN)
@@ -245,7 +245,8 @@ int recv_packet(int s, gss_buffer_desc * out,
 int send_packet(int s, gss_buffer_desc * out,
 		struct sockaddr_in * peer, char pac) {
 	struct header ph;
-	size_t sent, tosend;
+	ssize_t sent;
+	size_t tosend;
 	ph.pac = pac;
 	gss_ctx_id_t ctx = get_context(peer);
 	int rc;

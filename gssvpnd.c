@@ -104,7 +104,7 @@ void handle_shutdown(struct conn * client) {
 void netinit_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	struct conn * c = (struct conn*)ios->data;
 	uint8_t buf[1024];
-	size_t r, offset = 0;
+	ssize_t r, offset = 0;
 	const uint64_t ether_null = 0;
 
 	if(!c->ni) {
@@ -113,7 +113,7 @@ void netinit_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	}
 
 	while((r = read(ios->fd, buf, 1024)) > 0) {
-		size_t tocopy;
+		size_t tocopy = 0;
 		if(memcmp(c->mac, &ether_null, sizeof(c->mac)) == 0) {
 			int i;
 			struct ether_addr * laddr;
@@ -122,7 +122,7 @@ void netinit_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 			*lock++ = 0;
 			offset = (lock - buf);
 			for(i = 0; i < sizeof(c->mac); i++) {
-				c->mac[i] = (long)strtol(buf+(3*i), NULL, 16);
+				c->ni->mac[i] = (long)strtol(buf+(3*i), NULL, 16);
 			}
 		}
 		tocopy = r - offset;
@@ -156,6 +156,10 @@ void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 	OM_uint32 maj, min, timeout;
 	uint8_t eh;
 
+	ev_child_stop(loop, ioc);
+	if(ev_is_active(&client->nipipe))
+		ev_io_stop(loop, &client->nipipe);
+
 	if(ioc->rstatus != 0) {
 		logit(0, "Rejecting client %s:%d (%s)", c->ipstr,
 			c->addr.sin_port, c->princname);
@@ -186,9 +190,8 @@ void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 	c->conntimeout.data = c;
 	ev_timer_start(loop, &c->conntimeout);
 
-	c->ni->len = htons(c->ni->len);
 	out.length = tosend;
-	out.value = &c->ni;
+	out.value = c->ni;
 	send_packet(netfd, &out, &c->addr, PAC_NETINIT);
 
 	free(c->ni);
@@ -199,10 +202,10 @@ void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 
 void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	uint8_t framebuf[1550], dstmac[6];
-	size_t size = read(ios->fd, framebuf, 1550);
+	ssize_t size = read(ios->fd, framebuf, 1550);
 	gss_buffer_desc plaintext = { size, framebuf }; 
 
-	if(size == EAGAIN)
+	if(size < 0 && errno == EAGAIN)
 		return;
 
 	memcpy(dstmac, framebuf, 6);
@@ -234,7 +237,7 @@ void handle_netinit(struct ev_loop * loop, struct conn * client) {
 	pid_t pid;
 	int fds[2];
 
-	if(client->ni)
+	if(ev_is_active(&client->nichild))
 		return;
 
 	if(!netinit_util) {

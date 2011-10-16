@@ -62,10 +62,12 @@ void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
 		if(gssstate != GSS_S_COMPLETE) {
 			logit(1, "Did not receive GSS packet from server. Retrying.");
 			do_gssinit(NULL);
+			ev_timer_again(loop, w);
 		}
 		else if(init != 1) {
 			logit(1, "Did not receive netinit packet from server. Retrying.");
 			send_packet(netfd, NULL, &server, PAC_NETINIT);
+			ev_timer_again(loop, w);
 		}
 		else
 			ev_timer_stop(loop, w);
@@ -79,6 +81,7 @@ void netinit_cb(struct ev_loop * loop, ev_child * c, int revents) {
 	if(c->rstatus == 0) {
 		init = 1;
 		logit(0, "Netinit okay. Starting normal operation.");
+		ev_child_stop(loop, &netinit_child);
 		return;
 	}
 
@@ -92,6 +95,7 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	struct netinit ni;
 	struct ifreq ifr;
 	pid_t pid;
+	int ts;
 
 	if(in->length > sizeof(ni)) {
 		logit(1, "Received a netinit packet %d bytes too long",
@@ -102,19 +106,22 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	memcpy(&ni, in->value, in->length);
 	memset(&ifr, 0, sizeof(ifr));
 	strncpy(ifr.ifr_name, tapdev, IFNAMSIZ);
+	ts = socket(PF_UNIX, SOCK_STREAM, 0);
 #ifdef SIOCSIFHWADDR
 	memcpy(ifr.ifr_hwaddr.sa_data, ni.mac, sizeof(ni.mac));
-	if(ioctl(tapfd, SIOCSIFHWADDR, &ifr) < 0) {
+	if(ioctl(ts, SIOCSIFHWADDR, &ifr) < 0) {
 #else
 	memcpy(ifr.ifr_addr.sa_data, ni.mac, sizeof(ni.mac));
 	ifr.ifr_addr.sa_family = AF_LINK;
 	ifr.ifr_addr.sa_len = sizeof(ni.mac);
-	if(ioctl(tapfd, SIOCSIFLLADDR, &ifr) < 0) {
+	if(ioctl(ts, SIOCSIFLLADDR, &ifr) < 0) {
 #endif
 		logit(1, "Error setting MAC address for %s: %s", tapdev,
 			strerror(errno));
+		close(ts);
 		return -1;
 	}
+	close(ts);
 
 	if(!ni.len) {
 		logit(-1, "Received no netinit data, but that's okay! Starting normal operation.");
@@ -131,36 +138,36 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 
 	init = 0;
 	last_init_activity = ev_now(loop);
+
 	pid = fork();
 	if(pid == 0) {
 		uint8_t * lock = netinit_util + (strlen(netinit_util) - 1);
-		char ** args = malloc(sizeof(char*)* 256);
-		int argcount = 0;
-		OM_uint32 min;
-
-		close(tapfd);
-		close(netfd);
+		char * args[257];
+		int argc = 0;
 
 		while(*lock != '/' && lock != netinit_util)
 			lock--;
 		if(*lock == '/')
 			lock++;
 
-		args[argcount++] = netinit_util;
-		args[argcount++] = tapdev;
+		args[argc++] = lock;
+		args[argc++] = tapdev;
 		lock = ni.payload;
-		while(lock - ni.payload < ni.len && argcount < 255) {
+		while(lock - ni.payload < ni.len && argc < 255) {
 			uint8_t * save = lock;
 			while(*lock != '\n' && lock - ni.payload < ni.len) lock++;
 			if(*lock == '\n') {
 				*lock = 0;
-				args[argcount++] = save;
+				args[argc++] = save;
 				lock++;
 			}
 		}
-		args[argcount] = NULL;
+		args[argc] = NULL;
+
+		close(tapfd);
+		close(netfd);
 		if(execv(netinit_util, args) < 0)
-			exit(-1);
+			exit(errno);
 	} else {
 		ev_child_init(&netinit_child, netinit_cb, pid, 0);
 		ev_child_start(loop, &netinit_child);

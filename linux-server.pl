@@ -68,7 +68,7 @@ close $conf;
 
 if(!$clientmac) {
 	for($i = 0; $i < 6; $i++) {
-		$clientmac .= sprintf("%02x-", rand(255));
+		$clientmac .= sprintf("%02x:", rand(255));
 	}
 	chop $clientmac;
 }

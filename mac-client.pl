@@ -19,25 +19,26 @@ my $ipaddr = my $subnet = my $gateway = my $dhcp = undef;
 my $tapdev = shift @ARGV;
 my @routenets = my @routehosts = ( );
 
-while (shift @ARGV) {
+while (@ARGV) {
+	$_ = shift;
 	if($_ =~ /ip/) {
-		$ipaddr = shift @ARGV;
+		$ipaddr = shift;
 	}
 	elsif($_ =~ /subnet/) {
-		$subnet = shift @ARGV;
+		$subnet = shift;
 	}
 	elsif($_ =~ /gateway/) {
-		$gateway = shift @ARGV;
+		$gateway = shift;
 	}
 	elsif($_ =~ /dhcp/) {
 		system "ipconfig set $tapdev DHCP";
 		$dhcp = 1;
 	}
 	elsif($_ =~ /routenet/) {
-		push @routenets, shift @ARGV;
+		push @routenets, shift;
 	}
 	elsif($_ =~ /route/) {
-		push @routehosts, shift @ARGV;
+		push @routehosts, shift;
 	}
 }
 
