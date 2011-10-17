@@ -226,7 +226,7 @@ int recv_packet(int s, gss_buffer_desc * out,
 		return -1;
 	}
 
-	if(ctx && ph.pac != PAC_GSSINIT) {
+	if(ctx != GSS_C_NO_CONTEXT && ph.pac != PAC_GSSINIT) {
 		maj = gss_unwrap(&min, ctx, &crypted, out, NULL, NULL);
 		if(maj != GSS_S_COMPLETE) {
 			logit(1, "Error unwrapping packet from remote host");

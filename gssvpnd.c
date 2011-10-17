@@ -208,6 +208,7 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	ssize_t size = read(ios->fd, framebuf, 1550);
 	gss_buffer_desc plaintext = { size, framebuf }; 
 	int rc;
+	OM_uint32 lmin;
 
 	if(size < 0 && errno == EAGAIN)
 		return;
@@ -218,9 +219,20 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		for(i = 0; i < 255; i++) {
 			struct conn * cur = clients_ether[i];
 			while(cur) {
+				if(cur->context == GSS_C_NO_CONTEXT ||
+					cur->gssstate == GSS_S_CONTINUE_NEEDED) {
+					if(verbose)
+						logit(-1, "Dropping packet for tap");
+					cur = cur->ethernext;
+					continue;
+				}
 				rc = send_packet(netfd, &plaintext, &cur->addr, PAC_DATA);
 				if(rc == -2) {
 					logit(1, "Reinitializing GSSAPI context");
+					if(cur->context != GSS_C_NO_CONTEXT) {
+						gss_delete_sec_context(&lmin, &cur->context, NULL);
+						cur->context = GSS_C_NO_CONTEXT;
+					}
 					send_packet(netfd, NULL, &cur->addr, PAC_GSSINIT);
 				}
 				cur = cur->ethernext;
@@ -237,10 +249,20 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 			logit(-1, "Received packet for unknown client");
 		return;
 	}
+	if(client->context == GSS_C_NO_CONTEXT ||
+		client->gssstate == GSS_S_CONTINUE_NEEDED) {
+		if(verbose)
+			logit(-1, "Dropping packet for tap");
+		return;
+	}
 
 	rc = send_packet(netfd, &plaintext, &client->addr, PAC_DATA);
 	if(rc == -2) {
 		logit(1, "Reinitializing GSSAPI context");
+		if(client->context != GSS_C_NO_CONTEXT) {
+			gss_delete_sec_context(&lmin, &client->context, NULL);
+			client->context = GSS_C_NO_CONTEXT;
+		}
 		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT);
 	}
 }
@@ -332,7 +354,7 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 	int nameeq = 0;
 
 	if(client->gssstate == GSS_S_COMPLETE && 
-					client->context != GSS_C_NO_CONTEXT)
+		client->context != GSS_C_NO_CONTEXT)
 		gss_delete_sec_context(&lmin, &client->context, NULL);
 	client->context = GSS_C_NO_CONTEXT;
 
@@ -379,6 +401,10 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	int rc = recv_packet(netfd, &packet, &pac, &peer);
 	if(rc == -2) {
 		logit(1, "Reinitializing GSSAPI context");
+		if(client->context != GSS_C_NO_CONTEXT) {
+			gss_delete_sec_context(&min, &client->context, NULL);
+			client->context = GSS_C_NO_CONTEXT;
+		}
 		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT);
 		return;
 	} else if(rc < 0)
@@ -388,7 +414,8 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	if(!client)
 		return;
 
-	if(client->gssstate == GSS_S_CONTINUE_NEEDED && pac != PAC_GSSINIT) {
+	if((client->gssstate == GSS_S_CONTINUE_NEEDED ||
+		client->context == GSS_C_NO_CONTEXT) && pac != PAC_GSSINIT) {
 		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT);
 		if(packet.length)
 			gss_release_buffer(&min, &packet);

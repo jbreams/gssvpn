@@ -183,7 +183,8 @@ int do_gssinit(gss_buffer_desc * in) {
 	tokenout.value = NULL;
 	tokenout.length = 0;
 
-	if(context == GSS_C_NO_CONTEXT)
+	if(context != GSS_C_NO_CONTEXT &&
+		gssstate == GSS_S_COMPLETE)
 		gss_delete_sec_context(&min, &context, NULL);
 	gssstate = gss_init_sec_context(&min, GSS_C_NO_CREDENTIAL,
 					&context, target_name, NULL, 0, 0, NULL,
@@ -220,6 +221,10 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	rc = recv_packet(netfd, &packet, &pac, &peer);
 	if(rc == -2) {
 		logit(1, "Reinitializing GSSAPI context");
+		if(context != GSS_C_NO_CONTEXT) {
+			gss_delete_sec_context(&min, &context, NULL);
+			context = GSS_C_NO_CONTEXT;
+		}
 		do_gssinit(NULL);
 	}
 	if(rc != 0)
@@ -251,7 +256,14 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	uint8_t inbuff[1550];
 	gss_buffer_desc plaintext = { 1550, inbuff };
+	OM_uint32 min;
 	int rc;
+
+	if(context == GSS_C_NO_CONTEXT || gssstate == GSS_S_CONTINUE_NEEDED) {
+		if(verbose)
+			logit(-1, "Dropping packet from tap");
+		return;
+	}
 
 	plaintext.length = read(tapfd, inbuff, 1550);
 	if(plaintext.length < 0) {
@@ -266,6 +278,10 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	rc = send_packet(netfd, &plaintext, &server, PAC_DATA);
 	if(rc == -2) {
 		logit(0, "Reinitializing GSSAPI context");
+		if(context != GSS_C_NO_CONTEXT) {
+			gss_delete_sec_context(&min, &context, NULL);
+			context = GSS_C_NO_CONTEXT;
+		}
 		do_gssinit(NULL);
 	}
 	return;
