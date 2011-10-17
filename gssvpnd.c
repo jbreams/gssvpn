@@ -43,7 +43,7 @@ struct conn * clients_ether[255];
 gss_cred_id_t srvcreds = GSS_C_NO_CREDENTIAL;
 int verbose = 0;
 int daemonize = 0;
-int reapclients = 36000;
+int killontimeout = 0;
 char * netinit_util = NULL;
 
 int tapfd = -1, netfd = -1;
@@ -141,19 +141,35 @@ void netinit_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 
 void conn_timeout_cb(struct ev_loop * loop, ev_timer * iot, int revents) {
 	struct conn * c = (struct conn*)iot->data;
+	OM_uint32 maj, min, timeout;
 
-	logit(0, "Connection %s:%d (%s) has timed out.",
-		c->ipstr, c->addr.sin_port, c->princname);
+	maj = gss_context_time(&min, c->context, &timeout);
+	if(maj == GSS_S_COMPLETE && timeout > 0) {
+		iot->repeat = timeout;
+		ev_timer_again(loop, iot);
+		return;
+	}
 
-	send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN);
-	handle_shutdown(c);
+	if(maj == GSS_S_CONTEXT_EXPIRED ||
+		maj == GSS_S_CREDENTIALS_EXPIRED) {
+		if(killontimeout) {
+			logit(0, "Connection %s (%s:%d) has timed out. Shutting down.",
+				c->princname, c->ipstr, c->addr.sin_port);
+			send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN);
+			handle_shutdown(c);
+		} else {
+			logit(0, "Connection %s (%s:%d) has timed out. Requesting GSSINIT.",
+				c->princname, c->ipstr, c->addr.sin_port);
+			send_packet(netfd, NULL, &c->addr, PAC_GSSINIT);
+		}
+	}
+	ev_timer_stop(loop, iot);
 }
 
 void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 	struct conn * c = (struct conn*)ioc->data;
 	const size_t tosend = c->ni->len + sizeof(c->ni->mac) + sizeof(uint16_t);
 	gss_buffer_desc out;
-	OM_uint32 maj, min, timeout;
 	uint8_t eh;
 
 	ev_child_stop(loop, ioc);
@@ -176,22 +192,6 @@ void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 	unlink_conn(c, CLIENT_ETHERNET);
 	c->ethernext = clients_ether[eh];
 	clients_ether[eh] = c;
-
-	maj = gss_context_time(&min, c->context, &timeout);
-	if(maj != GSS_S_COMPLETE) {
-		logit(1, "Unable to get remaining time for context");
-		display_gss_err(maj, min);
-		send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN);
-		handle_shutdown(c);
-		return;	
-	}
-
-	if(timeout < reapclients)
-		timeout = reapclients;
-
-	ev_timer_init(&c->conntimeout, conn_timeout_cb, timeout, 0);
-	c->conntimeout.data = c;
-	ev_timer_start(loop, &c->conntimeout);
 
 	out.length = tosend;
 	out.value = c->ni;
@@ -328,7 +328,7 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 	gss_buffer_desc * intoken) {
 	gss_name_t client_name;
 	gss_buffer_desc output, nameout;
-	OM_uint32 flags, lmin, maj, min;
+	OM_uint32 flags, lmin, maj, min, timeout;
 	int nameeq = 0;
 
 	if(client->gssstate == GSS_S_COMPLETE && 
@@ -355,6 +355,19 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 	client->princname = strdup(nameout.value);
 	gss_release_buffer(&lmin, &nameout);
 	gss_release_name(&lmin, &client_name);
+
+	maj = gss_context_time(&min, client->context, &timeout);
+	if(maj != GSS_S_COMPLETE) {
+		logit(1, "Error getting context lifetime for %s (%s:%d)",
+					client->princname, client->ipstr, client->addr.sin_port);
+		display_gss_err(maj, min);
+		send_packet(netfd, NULL, &client->addr, PAC_SHUTDOWN);
+		return;
+	}
+
+	ev_timer_init(&client->conntimeout, conn_timeout_cb, timeout, 0);
+	client->conntimeout.data = client;
+	ev_timer_start(loop, &client->conntimeout);
 }
 
 void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
@@ -443,7 +456,7 @@ int main(int argc, char ** argv) {
 	struct oc * cur;
 	uid_t dropto = 0;
 
-	while((ch = getopt(argc, argv, "ds:p:i:va:u:t:")) != -1) {
+	while((ch = getopt(argc, argv, "ds:p:i:va:u:t")) != -1) {
 		switch(ch) {
 			case 'v':
 				verbose = 1;
@@ -478,7 +491,7 @@ int main(int argc, char ** argv) {
 				dropto = u->pw_uid;
 			}
 			case 't':
-				reapclients = atoi(optarg);
+				killontimeout = 1;				
 			case 'd':
 				daemonize = 1;
 		}
