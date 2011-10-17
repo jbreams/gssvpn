@@ -207,6 +207,7 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	uint8_t framebuf[1550], dstmac[6];
 	ssize_t size = read(ios->fd, framebuf, 1550);
 	gss_buffer_desc plaintext = { size, framebuf }; 
+	int rc;
 
 	if(size < 0 && errno == EAGAIN)
 		return;
@@ -217,7 +218,11 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		for(i = 0; i < 255; i++) {
 			struct conn * cur = clients_ether[i];
 			while(cur) {
-				send_packet(netfd, &plaintext, &cur->addr, PAC_DATA);
+				rc = send_packet(netfd, &plaintext, &cur->addr, PAC_DATA);
+				if(rc == -2) {
+					logit(1, "Reinitializing GSSAPI context");
+					send_packet(netfd, NULL, &cur->addr, PAC_GSSINIT);
+				}
 				cur = cur->ethernext;
 			}
 		}
@@ -233,7 +238,11 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 
-	send_packet(netfd, &plaintext, &client->addr, PAC_DATA);
+	rc = send_packet(netfd, &plaintext, &client->addr, PAC_DATA);
+	if(rc == -2) {
+		logit(1, "Reinitializing GSSAPI context");
+		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT);
+	}
 }
 
 void handle_netinit(struct ev_loop * loop, struct conn * client) {
@@ -346,7 +355,6 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 	client->princname = strdup(nameout.value);
 	gss_release_buffer(&lmin, &nameout);
 	gss_release_name(&lmin, &client_name);
-	handle_netinit(loop, client);
 }
 
 void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
@@ -355,8 +363,12 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	struct sockaddr_in peer;
 	struct conn * client;
 	OM_uint32 min;
-
-	if(recv_packet(netfd, &packet, &pac, &peer) != 0)
+	int rc = recv_packet(netfd, &packet, &pac, &peer);
+	if(rc == -2) {
+		logit(1, "Reinitializing GSSAPI context");
+		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT);
+		return;
+	} else if(rc < 0)
 		return;
 
 	client = get_conn(&peer);

@@ -59,7 +59,7 @@ gss_ctx_id_t get_context(struct sockaddr_in* peer) {
 }
 
 void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
-	ev_tstamp now = ev_now (EV_A);
+	ev_tstamp now = ev_now(loop);
 	ev_tstamp timeout = last_init_activity + 10;
 	if(timeout < now) {
 		if(gssstate != GSS_S_COMPLETE) {
@@ -84,6 +84,7 @@ void netinit_cb(struct ev_loop * loop, ev_child * c, int revents) {
 	ev_child_stop(loop, c);
 	if(c->rstatus == 0) {
 		init = 1;
+		ev_timer_stop(loop, &init_retry);
 		logit(0, "Netinit okay. Starting normal operation.");
 		return;
 	}
@@ -125,21 +126,14 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	}
 	close(ts);
 
-	if(!ni.len) {
-		logit(-1, "Received no netinit data, but that's okay! Starting normal operation.");
-		init = 1;
-		return 0;
-	}
-
-	if(!netinit_util) {
-		logit(0, "Received %d bytes of netinit data, but no netinit util. Starting normal operation.",
-			ni.len);
+	last_init_activity = ev_now(loop);
+	if(netinit_util == NULL || ni.len == 0) {
+		logit(0, "Starting normal operation without netinit util");
 		init = 1;
 		return 0;
 	}
 
 	init = 0;
-	last_init_activity = ev_now(loop);
 
 	lock = netinit_util + (strlen(netinit_util) - 1);
 	while(*lock != '/' && lock != netinit_util)
@@ -211,6 +205,8 @@ int do_gssinit(gss_buffer_desc * in) {
 		if(rc < 0)
 			return -1;
 	}
+	else if(gssstate == GSS_S_COMPLETE && init != 1)
+		send_packet(netfd, NULL, &server, PAC_NETINIT);
 	return 0;
 }
 
@@ -222,6 +218,10 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	OM_uint32 min;
 
 	rc = recv_packet(netfd, &packet, &pac, &peer);
+	if(rc == -2) {
+		logit(1, "Reinitializing GSSAPI context");
+		do_gssinit(NULL);
+	}
 	if(rc != 0)
 		return;
 	
@@ -251,6 +251,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	uint8_t inbuff[1550];
 	gss_buffer_desc plaintext = { 1550, inbuff };
+	int rc;
 
 	plaintext.length = read(tapfd, inbuff, 1550);
 	if(plaintext.length < 0) {
@@ -262,7 +263,11 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		logit(-1, "Received packet from TAP of %d bytes",
 			plaintext.length);
 
-	send_packet(netfd, &plaintext, &server, PAC_DATA);
+	rc = send_packet(netfd, &plaintext, &server, PAC_DATA);
+	if(rc == -2) {
+		logit(0, "Reinitializing GSSAPI context");
+		do_gssinit(NULL);
+	}
 	return;
 }
 
@@ -355,9 +360,9 @@ int main(int argc, char ** argv) {
 		return -1;
 	}
 
-	ev_timer_init(&init_retry, init_retry_cb, 10, 0);
+	ev_init(&init_retry, init_retry_cb);
 	last_init_activity = ev_now(loop);
-	ev_timer_start(loop, &init_retry);
+	init_retry_cb(loop, &init_retry, EV_TIMER);
 
 	ev_run(loop, 0);
 	if(netinit_util) {

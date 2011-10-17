@@ -231,7 +231,7 @@ int recv_packet(int s, gss_buffer_desc * out,
 		if(maj != GSS_S_COMPLETE) {
 			logit(1, "Error unwrapping packet from remote host");
 			display_gss_err(maj, min);
-			return -1;
+			return -2;
 		}
 	} else {
 		out->value = malloc(ph.len);
@@ -273,7 +273,7 @@ int send_packet(int s, gss_buffer_desc * out,
 		if(maj != GSS_S_COMPLETE) {
 			logit(1, "Error encrypting packet");
 			display_gss_err(maj, min);
-			return -1;
+			return -2;
 		}
 
 		rc = lzo1x_1_compress(pout.value, pout.length,
