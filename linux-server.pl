@@ -61,6 +61,9 @@ while(<$conf>) {
 	elsif($inuser && $_ =~ /mac\s+((?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2})/i) {
 		$clientmac = $1;
 	}
+	elsif($inuser && $_ =~ /dhcp/i) {
+		$clientip = 'dhcp';
+	}
 }
 close $conf;
 
@@ -73,7 +76,11 @@ if(!$clientmac) {
 	chop $clientmac;
 }
 
-print "$clientmac\nip\n$clientip\nsubnet\n$subnet\ngateway\n$gateway\n";
+if($clientip =~ /dhcp/) {
+	print "$clientmac\ndhcp\nsubnet\n$subnet\ngateway\n$gateway\n";
+} else {
+	print "$clientmac\nip\n$clientip\nsubnet\n$subnet\ngateway\n$gateway\n";
+}
 
 !$gateway && exit 0;
 
