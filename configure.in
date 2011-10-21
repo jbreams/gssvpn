@@ -31,6 +31,13 @@ AC_CHECK_FUNCS([gss_accept_sec_context gss_init_sec_context \
 AC_CHECK_FUNCS([ioctl setsockopt bind recvfrom sendto socket])
 AC_CHECK_FUNCS(memcmp memcpy memmove memset)
 
+CPPFLAGS_save="$CPPFLAGS"
+CPPFLAGS="$CPPFLAGS -FKerberos"
+AC_CHECK_HEADER([Kerberos/KerberosLogin.h],
+	AC_DEFINE([HAVE_KERBEROSLOGIN_H], [1], [Has OSX Kerberos]) \
+		LIBS="$LIBS -framework Kerberos",
+	CFLAGS="$CPPFLAGS_save")
+
 m4_include([libev/libev.m4])
 
 AC_CHECK_TYPE(ptrdiff_t,long)

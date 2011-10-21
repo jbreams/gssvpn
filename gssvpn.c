@@ -23,6 +23,9 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <gssapi/gssapi.h>
+#ifdef HAVE_KERBEROSLOGIN_H
+#include <Kerberos/KerberosLogin.h>
+#endif
 #include <unistd.h>
 #include <net/if.h>
 #if defined(HAVE_IF_TUN)
@@ -49,6 +52,7 @@ ev_timer init_retry;
 ev_signal term;
 int daemonize = 0;
 ev_tstamp last_init_activity;
+char * username = NULL; 
 char * netinit_args[258];
 struct netinit ni;
 
@@ -174,8 +178,14 @@ int do_gssinit(gss_buffer_desc * in) {
 	gss_name_t target_name;
 	char prodid[512];
 	gss_buffer_desc tokenout = { 512, &prodid };
-	OM_uint32 min;
+	OM_uint32 min, maj, timeout;
 
+#ifdef HAVE_KERBEROSLOGIN_H
+	KLPrincipal kerb_user_id;
+	KLCreatePrincipalFromString(username, kerberosVersion_V5, &kerb_user_id);
+	maj = KLAcquireInitialTickets(kerb_user_id, NULL, NULL, NULL);
+	KLDisposePrincipal(kerb_user_id);
+#endif
 	tokenout.length = snprintf(prodid, 512, "%s@%s", service, hostname);
 	gssstate = gss_import_name(&min, &tokenout, 
 					(gss_OID)GSS_C_NT_HOSTBASED_SERVICE,
@@ -198,7 +208,6 @@ int do_gssinit(gss_buffer_desc * in) {
 	}
 
 	gss_release_name(&min, &target_name);
-
 	if(tokenout.length) {
 		int rc;
 		rc = send_packet(netfd, &tokenout, &server, PAC_GSSINIT);
@@ -302,7 +311,7 @@ int main(int argc, char ** argv) {
 
 	memset(&server, 0, sizeof(struct sockaddr_in));
 	
-	while((ch = getopt(argc, argv, "vh:p:s:i:a:")) != -1) {
+	while((ch = getopt(argc, argv, "vh:p:s:i:a:u:")) != -1) {
 		switch(ch) {
 			case 'v':
 				verbose = 1;
@@ -328,6 +337,9 @@ int main(int argc, char ** argv) {
 				netinit_util = strdup(optarg);
 				break;
 			}
+			case 'u':
+				username = strdup(optarg);
+				break;
 		}
 	}
 
@@ -395,9 +407,8 @@ int main(int argc, char ** argv) {
 
 	close(tapfd);
 	close(netfd);
-	if(context == GSS_C_NO_CONTEXT)
+	if(context != GSS_C_NO_CONTEXT)
 		gss_delete_sec_context(&min, &context, NULL);
-
 	return 0;
 }
 

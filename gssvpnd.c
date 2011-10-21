@@ -359,7 +359,7 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 	client->context = GSS_C_NO_CONTEXT;
 
 	maj = gss_accept_sec_context(&min, &client->context, srvcreds, intoken,
-					NULL, &client_name, NULL, &output, &flags, NULL, NULL);
+					NULL, &client_name, NULL, &output, &flags, &timeout, NULL);
 	if(maj != GSS_S_COMPLETE && maj != GSS_S_CONTINUE_NEEDED) {
 		logit(1, "Error accepting security context from %s", client->ipstr);
 		display_gss_err(maj, min);
@@ -378,18 +378,11 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 	gss_release_buffer(&lmin, &nameout);
 	gss_release_name(&lmin, &client_name);
 
-	maj = gss_context_time(&min, client->context, &timeout);
-	if(maj != GSS_S_COMPLETE) {
-		logit(1, "Error getting context lifetime for %s (%s:%d)",
-					client->princname, client->ipstr, client->addr.sin_port);
-		display_gss_err(maj, min);
-		send_packet(netfd, NULL, &client->addr, PAC_SHUTDOWN);
-		return;
+	if(timeout != GSS_C_INDEFINITE) {
+		ev_timer_init(&client->conntimeout, conn_timeout_cb, timeout, 0);
+		client->conntimeout.data = client;
+		ev_timer_start(loop, &client->conntimeout);
 	}
-
-	ev_timer_init(&client->conntimeout, conn_timeout_cb, timeout, 0);
-	client->conntimeout.data = client;
-	ev_timer_start(loop, &client->conntimeout);
 }
 
 void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
@@ -400,6 +393,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	OM_uint32 min;
 	int rc = recv_packet(netfd, &packet, &pac, &peer);
 	if(rc == -2) {
+		client = get_conn(&peer);
 		logit(1, "Reinitializing GSSAPI context");
 		if(client->context != GSS_C_NO_CONTEXT) {
 			gss_delete_sec_context(&min, &client->context, NULL);
@@ -409,9 +403,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	} else if(rc < 0)
 		return;
-
-	client = get_conn(&peer);
-	if(!client)
+	else if((client = get_conn(&peer)) == NULL)
 		return;
 
 	if((client->gssstate == GSS_S_CONTINUE_NEEDED ||
