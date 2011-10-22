@@ -39,6 +39,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#ifdef HAVE_IFADDRS_H
+#include <ifaddrs.h>
+#endif
 #include "libev/ev.h"
 #include "gssvpn.h"
 
@@ -52,9 +55,10 @@ ev_timer init_retry;
 ev_signal term;
 int daemonize = 0;
 ev_tstamp last_init_activity;
-char * username = NULL; 
+char * username = NULL;
 char * netinit_args[258];
-struct netinit ni;
+uint8_t mac[6];
+gss_buffer_desc netinit_buffer;
 
 gss_ctx_id_t get_context(struct sockaddr_in* peer) {
 	if(gssstate == GSS_S_COMPLETE)
@@ -72,8 +76,9 @@ void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
 			ev_timer_again(loop, w);
 		}
 		else if(init != 1) {
+			gss_buffer_desc macout = { sizeof(mac), mac };
 			logit(1, "Did not receive netinit packet from server. Retrying.");
-			send_packet(netfd, NULL, &server, PAC_NETINIT);
+			send_packet(netfd, &macout, &server, PAC_NETINIT);
 			ev_timer_again(loop, w);
 		}
 		else
@@ -87,7 +92,6 @@ void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
 void netinit_cb(struct ev_loop * loop, ev_child * c, int revents) {
 	ev_child_stop(loop, c);
 	if(c->rstatus == 0) {
-		init = 1;
 		ev_timer_stop(loop, &init_retry);
 		logit(0, "Netinit okay. Starting normal operation.");
 		return;
@@ -96,66 +100,39 @@ void netinit_cb(struct ev_loop * loop, ev_child * c, int revents) {
 	logit(1, "Received error code from netinit util %d", c->rstatus);
 	send_packet(netfd, NULL, &server, PAC_SHUTDOWN);
 	ev_break(loop, EVBREAK_ALL);
+	init = 0;
 }
 
 int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	uint8_t * lock;
-	struct ifreq ifr;
 	pid_t pid;
 	int ts, argc = 0;
 
-	if(in->length > sizeof(ni)) {
-		logit(1, "Received a netinit packet %d bytes too long",
-			in->length - sizeof(ni));
-		return -1;
-	}
-
-	memcpy(&ni, in->value, in->length);
-	memset(&ifr, 0, sizeof(ifr));
-	strncpy(ifr.ifr_name, tapdev, IFNAMSIZ);
-	ts = socket(PF_UNIX, SOCK_STREAM, 0);
-#ifdef SIOCSIFHWADDR
-	memcpy(ifr.ifr_hwaddr.sa_data, ni.mac, sizeof(ni.mac));
-	if(ioctl(ts, SIOCSIFHWADDR, &ifr) < 0) {
-#else
-	memcpy(ifr.ifr_addr.sa_data, ni.mac, sizeof(ni.mac));
-	ifr.ifr_addr.sa_family = AF_LINK;
-	ifr.ifr_addr.sa_len = sizeof(ni.mac);
-	if(ioctl(ts, SIOCSIFLLADDR, &ifr) < 0) {
-#endif
-		logit(1, "Error setting MAC address for %s: %s", tapdev,
-			strerror(errno));
-		close(ts);
-		return -1;
-	}
-	close(ts);
-
-	last_init_activity = ev_now(loop);
-	if(netinit_util == NULL || ni.len == 0) {
-		logit(0, "Starting normal operation without netinit util");
-		init = 1;
+	if(!netinit_util)
 		return 0;
-	}
 
-	init = 0;
-
+	init = 1;
+	last_init_activity = ev_now(loop);
 	lock = netinit_util + (strlen(netinit_util) - 1);
 	while(*lock != '/' && lock != netinit_util)
 		lock--;
 	if(*lock == '/')
 		lock++;
+
 	netinit_args[argc++] = lock;
 	netinit_args[argc++] = tapdev;
 	netinit_args[argc++] = "init";
 
-	lock = ni.payload;
-	while(lock - ni.payload < ni.len && argc < 255) {
-		uint8_t * save = lock;
-		while(*lock != '\n' && lock - ni.payload < ni.len) lock++;
-		if(*lock == '\n') {
-			*lock = 0;
-			netinit_args[argc++] = save;
-			lock++;
+	if(in) {
+		lock = in->value;
+		while(lock - in->value < in->length && argc < 255) {
+			uint8_t * save = lock;
+			while(*lock != '\n' && lock - in->value < in->length) lock++;
+			if(*lock == '\n') {
+				*lock = 0;
+				netinit_args[argc++] = save;
+				lock++;
+			}
 		}
 	}
 	netinit_args[argc] = NULL;
@@ -215,8 +192,10 @@ int do_gssinit(gss_buffer_desc * in) {
 		if(rc < 0)
 			return -1;
 	}
-	else if(gssstate == GSS_S_COMPLETE && init != 1)
-		send_packet(netfd, NULL, &server, PAC_NETINIT);
+	if(gssstate == GSS_S_COMPLETE && init != 1) {
+		gss_buffer_desc macout = { sizeof(mac), mac };
+		send_packet(netfd, &macout, &server, PAC_NETINIT);
+	}
 	return 0;
 }
 
@@ -240,25 +219,23 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	
 	if(pac == PAC_DATA) {
-		if(verbose)
-			logit(-1, "Writing %d bytes to TAP", packet.length);
-
-		size_t s = write(tapfd, packet.value, packet.length);
+		logit(-1, "Writing %d bytes to TAP", packet.length);
+		ssize_t s = write(tapfd, packet.value, packet.length);
 		if(s < 0)
-			logit(1, "Error writing packet to tap: %s", strerror(errno));
-		else if(s < packet.length)
-			logit(1, "Sent less than expected to tap: %d < %d",
-				s, packet.length);
-		gss_release_buffer(&min, &packet);
-		return;
+			logit(1, "Error writing packet to tap: %s",
+				strerror(errno));
 	}
-	else if(pac == PAC_NETINIT)
-		do_netinit(loop, &packet);
-	else if(pac == PAC_GSSINIT)
+	else if(pac == PAC_NETINIT) {
+		if(packet.length > 0) {
+			memcpy(&netinit_buffer, &packet, sizeof(gss_buffer_desc));		
+			do_netinit(loop, &packet);
+		} else
+			do_netinit(loop, NULL);
+	} else if(pac == PAC_GSSINIT)
 		do_gssinit(&packet);
 	else if(pac == PAC_SHUTDOWN)
 		ev_break(loop, EVBREAK_ALL);
-	if(packet.length)
+	if(packet.length && pac != PAC_NETINIT)
 		gss_release_buffer(&min, &packet);
 }
 
@@ -269,8 +246,7 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	int rc;
 
 	if(context == GSS_C_NO_CONTEXT || gssstate == GSS_S_CONTINUE_NEEDED) {
-		if(verbose)
-			logit(-1, "Dropping packet from tap");
+		logit(-1, "Dropping packet from tap");
 		return;
 	}
 
@@ -280,9 +256,7 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 			strerror(errno));
 		return;
 	}
-	else if(verbose)
-		logit(-1, "Received packet from TAP of %d bytes",
-			plaintext.length);
+	logit(-1, "Received packet from TAP of %d bytes", plaintext.length);
 
 	rc = send_packet(netfd, &plaintext, &server, PAC_DATA);
 	if(rc == -2) {
@@ -299,6 +273,29 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 void term_cb(struct ev_loop * loop, ev_signal * ios, int revents) {
 	ev_signal_stop(loop, ios);
 	ev_break(loop, EVBREAK_ALL);
+}
+
+int get_mac() {
+#ifdef HAVE_IFADDRS_H
+	struct ifaddrs * ifp, *cifp;
+	if(getifaddrs(&ifp) < 0) {
+		logit(1, "Error getting list of interfaces %m");
+		return -1;
+	}
+
+	for(cifp = ifp;
+		cifp && strcmp(cifp->ifa_name, tapdev) != 0;
+		cifp = cifp->ifa_next);
+	if(!cifp) {
+		logit(1, "Couldn't find %s in list of interfaces", tapdev);
+		freeifaddrs(ifp);
+		return -1;
+	}
+
+	memcpy(mac, cifp->ifa_addr->sa_data, sizeof(mac));
+	freeifaddrs(ifp);
+#endif
+	return 0;
 }
 
 int main(int argc, char ** argv) {
@@ -372,6 +369,9 @@ int main(int argc, char ** argv) {
 
 	tapfd = open_tap(tapdev);
 	if(tapfd < 0)
+		return -1;
+
+	if(get_mac() < 0)
 		return -1;
 
 	loop = ev_default_loop(0);

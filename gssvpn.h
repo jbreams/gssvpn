@@ -43,7 +43,6 @@ struct conn {
 #endif
 
 struct netinit {
-	uint8_t mac[6];
 	uint16_t len;
 	uint8_t payload[4096];
 };

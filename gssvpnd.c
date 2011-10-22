@@ -38,6 +38,8 @@
 #define GSSVPN_SERVER
 #include "gssvpn.h"
 
+#define NETINIT_BUFLEN 4096;
+
 struct conn * clients_ip[255];
 struct conn * clients_ether[255];
 gss_cred_id_t srvcreds = GSS_C_NO_CREDENTIAL;
@@ -103,40 +105,23 @@ void handle_shutdown(struct conn * client) {
 
 void netinit_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	struct conn * c = (struct conn*)ios->data;
-	uint8_t buf[1024];
-	ssize_t r, offset = 0;
-	const uint64_t ether_null = 0;
+	ssize_t r, tocopy = NETINIT_BUFLEN;
 
-	if(!c->ni) {
+	if(!c->ni.value) {
 		logit(1, "Called netinit read for a null pointer!!");
 		return;
 	}
 
-	while((r = read(ios->fd, buf, 1024)) > 0) {
-		size_t tocopy = 0;
-		if(memcmp(c->mac, &ether_null, sizeof(c->mac)) == 0) {
-			int i;
-			struct ether_addr * laddr;
-			uint8_t * lock = buf;
-			while(*lock != '\n') lock++;
-			*lock++ = 0;
-			offset = (lock - buf);
-			for(i = 0; i < sizeof(c->mac); i++) {
-				c->ni->mac[i] = (long)strtol(buf+(3*i), NULL, 16);
-			}
-		}
-		tocopy = r - offset;
+	do {
+		if(c->ni.length)
+			tocopy = NETINIT_BUFLEN - c->ni.length;
 
-		if(tocopy + c->ni->len > sizeof(c->ni->payload))
-			tocopy = sizeof(c->ni->payload) - c->ni->len;
-
-		memcpy(c->ni->payload + c->ni->len, buf + offset, tocopy);
-		c->ni->len += tocopy;
-		if(c->ni->len == sizeof(c->ni->payload)) {
-			ev_io_stop(loop, ios);
-			return;
-		}
-	}
+		r = read(ios->fd, c->ni.value + c->ni.length, tocopy);
+		if(r > 0)
+			c->ni.length += r;
+	} while(r > 0 && c->ni.length < NETINIT_BUFLEN);
+	if(c->ni.length == NETINIT_BUFLEN)
+		ev_io_stop(loop, ios);
 }
 
 void conn_timeout_cb(struct ev_loop * loop, ev_timer * iot, int revents) {
@@ -168,7 +153,7 @@ void conn_timeout_cb(struct ev_loop * loop, ev_timer * iot, int revents) {
 
 void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 	struct conn * c = (struct conn*)ioc->data;
-	const size_t tosend = c->ni->len + sizeof(c->ni->mac) + sizeof(uint16_t);
+	const size_t tosend = c->ni->len + sizeof(uint16_t);
 	gss_buffer_desc out;
 	uint8_t eh;
 
@@ -187,18 +172,10 @@ void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 		return;
 	}
 
-	memcpy(c->mac, c->ni->mac, sizeof(c->mac));
-	eh = hash(c->mac, sizeof(c->mac));
-	unlink_conn(c, CLIENT_ETHERNET);
-	c->ethernext = clients_ether[eh];
-	clients_ether[eh] = c;
-
-	out.length = tosend;
-	out.value = c->ni;
-	send_packet(netfd, &out, &c->addr, PAC_NETINIT);
-
-	free(c->ni);
-	c->ni = NULL;
+	send_packet(netfd, c->ni.length > 0 ? &c->ni : NULL,
+		&c->addr, PAC_NETINIT);
+	free(c->ni.value);
+	c->ni.length = 0;
 	logit(0, "Client %s:%d (%s) is starting normal operation",
 		c->ipstr, c->addr.sin_port, c->princname);
 }
@@ -221,8 +198,7 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 			while(cur) {
 				if(cur->context == GSS_C_NO_CONTEXT ||
 					cur->gssstate == GSS_S_CONTINUE_NEEDED) {
-					if(verbose)
-						logit(-1, "Dropping packet for tap");
+					logit(-1, "Dropping packet for tap");
 					cur = cur->ethernext;
 					continue;
 				}
@@ -245,14 +221,12 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	while(client && memcmp(client->mac, dstmac, 6) != 0)
 		client = client->ethernext;
 	if(!client) {
-		if(verbose)
-			logit(-1, "Received packet for unknown client");
+		logit(-1, "Received packet for unknown client");
 		return;
 	}
 	if(client->context == GSS_C_NO_CONTEXT ||
 		client->gssstate == GSS_S_CONTINUE_NEEDED) {
-		if(verbose)
-			logit(-1, "Dropping packet for tap");
+		logit(-1, "Dropping packet for tap");
 		return;
 	}
 
@@ -267,30 +241,29 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	}
 }
 
-void handle_netinit(struct ev_loop * loop, struct conn * client) {
+void handle_netinit(struct ev_loop * loop, struct conn * client,
+	gss_buffer_desc * macbuf) {
 	pid_t pid;
 	int fds[2];
+	uint8_t * mac = macbuf->value;
 
 	if(ev_is_active(&client->nichild))
 		return;
 
-	if(!netinit_util) {
-		struct netinit ni;
-		uint8_t eh;
+	if(macbuf->length < sizeof(client->mac))
+		return;
 
-		gss_buffer_desc out = { 8, &ni };
-		int randfd = open("/dev/urandom", O_RDONLY);
-		read(randfd, ni.mac, sizeof(ni.mac));
-		ni.len = 0;
-		close(randfd);
-		memcpy(client->mac, ni.mac, sizeof(ni.mac));
-		eh = hash(client->mac, sizeof(client->mac));
+	if(memcmp(mac, client->mac, sizeof(client->mac)) != 0) {
+		uint8_t eh;
+		memcpy(client->mac, mac, sizeof(client->mac));
+		eh = hash(mac, sizeof(mac));
 		unlink_conn(client, CLIENT_ETHERNET);
 		client->ethernext = clients_ether[eh];
 		clients_ether[eh] = client;
-		logit(0, "Generating random MAC for %s:%d (%s)",
-			client->ipstr, client->addr.sin_port, client->princname);
-		send_packet(netfd, &out, &client->addr, PAC_NETINIT);
+	}
+
+	if(!netinit_util) {
+		send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
 		return;
 	}
 
@@ -309,8 +282,8 @@ void handle_netinit(struct ev_loop * loop, struct conn * client) {
 		return;
 	}
 
-	client->ni = malloc(sizeof(struct netinit));
-	memset(client->ni, 0, sizeof(struct netinit));
+	client->ni.value = malloc(NETINIT_BUFLEN);
+	client->ni.length = 0;
 	client->loop = loop;
 
 	ev_io_init(&client->nipipe, netinit_read_cb, fds[0], EV_READ);
@@ -338,9 +311,8 @@ void handle_netinit(struct ev_loop * loop, struct conn * client) {
 			exit(-1);
 	}
 	
-	if(verbose)
-		logit(-1, "Waiting for netinit util to finish for %s:%d (%s)",
-			client->ipstr, client->addr.sin_port, client->princname);
+	logit(-1, "Waiting for netinit util to finish for %s:%d (%s)",
+		client->ipstr, client->addr.sin_port, client->princname);
 	ev_child_init(&client->nichild, netinit_child_cb, pid, 0);
 	client->nichild.data = client;
 	ev_child_start(loop, &client->nichild);
@@ -354,9 +326,13 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 	int nameeq = 0;
 
 	if(client->gssstate == GSS_S_COMPLETE && 
-		client->context != GSS_C_NO_CONTEXT)
+		client->context != GSS_C_NO_CONTEXT) {
 		gss_delete_sec_context(&lmin, &client->context, NULL);
-	client->context = GSS_C_NO_CONTEXT;
+		client->context = GSS_C_NO_CONTEXT;
+	}
+
+	if(ev_is_active(&client->conntimeout))
+		ev_timer_stop(loop, &client->conntimeout);
 
 	maj = gss_accept_sec_context(&min, &client->context, srvcreds, intoken,
 					NULL, &client_name, NULL, &output, &flags, &timeout, NULL);
@@ -379,9 +355,8 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 	gss_release_name(&lmin, &client_name);
 
 	if(timeout != GSS_C_INDEFINITE) {
-		ev_timer_init(&client->conntimeout, conn_timeout_cb, timeout, 0);
 		client->conntimeout.data = client;
-		ev_timer_start(loop, &client->conntimeout);
+		conn_timeout_cb(loop, &client->conntimeout, 0);
 	}
 }
 
@@ -414,21 +389,21 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 
-	if(pac == PAC_DATA && memcmp(client->mac, &ether_empty,
-		sizeof(ether_empty)) == 0) {
-		handle_netinit(loop, client);		
-		if(packet.length)
-			gss_release_buffer(&min, &packet);
+	if(pac == PAC_DATA &&
+		memcmp(client->mac, &ether_empty, sizeof(client->mac)) == 0) {
+		logit(-1, "Received data packet for uninitialized client %s (%s:%d)",
+			client->princname, client->ipstr, client->addr.sin_port);
+		if(packet.length > 0)
+			free(packet.value);
 		return;
 	}
 
 	if(pac == PAC_DATA && packet.length > 0) {
-		if(verbose)
-			logit(-1, "Writing %d bytes to tap", packet.length);
+		logit(-1, "Writing %d bytes to tap", packet.length);
 		size_t s = write(tapfd, packet.value, packet.length);
 		if(s < 0)
 			logit(1, "Error writing to tap: %s", strerror(errno));
-		else if(s < packet.length && verbose)
+		else if(s < packet.length)
 			logit(1, "Wrote less than expected to tap: %s < %s",
 				s, packet.length);
 		gss_release_buffer(&min, &packet);
@@ -436,7 +411,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	else if(pac == PAC_GSSINIT)
 		handle_gssinit(loop, client, &packet);
 	else if(pac == PAC_NETINIT)
-		handle_netinit(loop, client);
+		handle_netinit(loop, client, &packet);
 	else if(pac == PAC_SHUTDOWN)
 		handle_shutdown(client);
 

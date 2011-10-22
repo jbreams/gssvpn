@@ -55,8 +55,11 @@ void logit(int level, char * fmt, ...) {
 	
 	if(level = 0)
 		err = LOG_INFO;
-	else if(level == -1)
+	else if(level == -1) {
+		if(verbose == 0)
+			return;
 		err = LOG_DEBUG;
+	}
 	else
 		err = LOG_ERR;
 	va_start(ap, fmt);

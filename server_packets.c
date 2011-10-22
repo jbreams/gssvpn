@@ -34,7 +34,8 @@ extern int verbose;
 
 struct conn * get_conn(struct sockaddr_in * peer) {
 	struct conn * client;
-	uint8_t h = hash((uint8_t*)peer, sizeof(struct sockaddr_in));
+	struct sockaddr * addr = (struct sockaddr*)peer;
+	uint8_t h = hash(addr->sa_data, addr->sa_len);
 	char * ipstr;
 
 	client = clients_ip[h];
@@ -73,7 +74,8 @@ void unlink_conn(struct conn * conn, char which) {
 	uint8_t h;
 	struct conn * last = NULL;
 	if(which & CLIENT_IP) {
-		h = hash((char*)&conn->addr, sizeof(struct sockaddr_in));
+		struct sockaddr * addr = (struct sockaddr*)&conn->addr;
+		h = hash(addr->sa_data, addr->sa_len);
 		struct conn * cur = clients_ip[h];
 		while(cur && cur != conn) {
 			last = cur;
