@@ -38,7 +38,7 @@ CPPFLAGS="$CPPFLAGS -FKerberos"
 AC_CHECK_HEADER([Kerberos/KerberosLogin.h],
 	AC_DEFINE([HAVE_KERBEROSLOGIN_H], [1], [Has OSX Kerberos]) \
 		LIBS="$LIBS -framework Kerberos",
-	CFLAGS="$CPPFLAGS_save")
+	CPPFLAGS="$CPPFLAGS_save")
 
 m4_include([libev/libev.m4])
 
