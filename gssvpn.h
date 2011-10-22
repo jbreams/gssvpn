@@ -37,15 +37,10 @@ struct conn {
 	ev_child nichild;
 	ev_io nipipe;
 	ev_timer conntimeout;
-	struct netinit * ni;
+	gss_buffer_desc ni;	
 	struct ev_loop * loop;
 };
 #endif
-
-struct netinit {
-	uint16_t len;
-	uint8_t payload[4096];
-};
 
 void display_gss_err(OM_uint32 major, OM_uint32 minor);
 int send_packet(int s, gss_buffer_desc * out,

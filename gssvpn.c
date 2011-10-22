@@ -125,9 +125,10 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 
 	if(in) {
 		lock = in->value;
-		while(lock - in->value < in->length && argc < 255) {
+		while(lock - (uint8_t*)in->value < in->length && argc < 255) {
 			uint8_t * save = lock;
-			while(*lock != '\n' && lock - in->value < in->length) lock++;
+			while(*lock != '\n' && lock - (uint8_t*)in->value < in->length)
+				lock++;
 			if(*lock == '\n') {
 				*lock = 0;
 				netinit_args[argc++] = save;

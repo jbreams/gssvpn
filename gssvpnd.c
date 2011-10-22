@@ -38,7 +38,7 @@
 #define GSSVPN_SERVER
 #include "gssvpn.h"
 
-#define NETINIT_BUFLEN 4096;
+#define NETINIT_BUFLEN 4096
 
 struct conn * clients_ip[255];
 struct conn * clients_ether[255];
@@ -87,12 +87,12 @@ void handle_shutdown(struct conn * client) {
 	if(client->context != GSS_C_NO_CONTEXT)
 		gss_delete_sec_context(&min, &client->context, NULL);
 
-	if(client->ni) {
+	if(client->ni.value != NULL) {
 		if(ev_is_active(&client->nipipe))
 			ev_io_stop(client->loop, &client->nipipe);
 		if(ev_is_active(&client->nichild))
 			ev_child_stop(client->loop, &client->nichild);
-		free(client->ni);
+		free(client->ni.value);
 	}
 
 	if(ev_is_active(&client->conntimeout))
@@ -153,7 +153,7 @@ void conn_timeout_cb(struct ev_loop * loop, ev_timer * iot, int revents) {
 
 void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 	struct conn * c = (struct conn*)ioc->data;
-	const size_t tosend = c->ni->len + sizeof(uint16_t);
+	const size_t tosend = c->ni.length + sizeof(uint16_t);
 	gss_buffer_desc out;
 	uint8_t eh;
 
