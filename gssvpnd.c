@@ -176,6 +176,7 @@ void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 		&c->addr, PAC_NETINIT);
 	free(c->ni.value);
 	c->ni.length = 0;
+	c->ni.value = NULL;
 	logit(0, "Client %s:%d (%s) is starting normal operation",
 		c->ipstr, c->addr.sin_port, c->princname);
 }
