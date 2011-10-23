@@ -53,7 +53,7 @@ void logit(int level, char * fmt, ...) {
 	int err;
 	va_list ap;
 	
-	if(level = 0)
+	if(level == 0)
 		err = LOG_INFO;
 	else if(level == -1) {
 		if(verbose == 0)

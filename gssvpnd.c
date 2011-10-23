@@ -262,10 +262,8 @@ void handle_netinit(struct ev_loop * loop, struct conn * client,
 		clients_ether[eh] = client;
 	}
 
-	if(!netinit_util) {
-		send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
+	if(!netinit_util)
 		return;
-	}
 
 	if(pipe(fds) < 0) {
 		logit(1, "Error creating pipe during netinit %s", strerror(errno));
@@ -295,7 +293,6 @@ void handle_netinit(struct ev_loop * loop, struct conn * client,
 		char portstr[6];
 		char * filename = netinit_util + (strlen(netinit_util) - 1);
 		uint8_t i;
-		OM_uint32 min;
 
 		close(netfd);
 		close(tapfd);
@@ -304,6 +301,8 @@ void handle_netinit(struct ev_loop * loop, struct conn * client,
 			filename--;
 		if(*filename == '/')
 			filename++;
+
+		sprintf(portstr, "%d", client->addr.sin_port);
 
 		dup2(fds[1], fileno(stdout));
 		if(execl(netinit_util, filename, client->princname,
@@ -403,9 +402,6 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		size_t s = write(tapfd, packet.value, packet.length);
 		if(s < 0)
 			logit(1, "Error writing to tap: %s", strerror(errno));
-		else if(s < packet.length)
-			logit(1, "Wrote less than expected to tap: %s < %s",
-				s, packet.length);
 		gss_release_buffer(&min, &packet);
 	}
 	else if(pac == PAC_GSSINIT)

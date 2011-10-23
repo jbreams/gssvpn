@@ -58,9 +58,6 @@ while(<$conf>) {
 	elsif($inuser && $_ =~ /ip\s+($ipmatch)\s*$/) {
 		$clientip = $1;
 	}
-	elsif($inuser && $_ =~ /mac\s+((?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2})/i) {
-		$clientmac = $1;
-	}
 	elsif($inuser && $_ =~ /dhcp/i) {
 		$clientip = 'dhcp';
 	}
@@ -69,17 +66,10 @@ close $conf;
 
 (!($clientip && $subnet)) && die "Must specify client ip and subnet.";
 
-if(!$clientmac) {
-	for($i = 0; $i < 6; $i++) {
-		$clientmac .= sprintf("%02x:", rand(255));
-	}
-	chop $clientmac;
-}
-
 if($clientip =~ /dhcp/) {
-	print "$clientmac\ndhcp\nsubnet\n$subnet\ngateway\n$gateway\n";
+	print "dhcp\nsubnet\n$subnet\ngateway\n$gateway\n";
 } else {
-	print "$clientmac\nip\n$clientip\nsubnet\n$subnet\ngateway\n$gateway\n";
+	print "ip\n$clientip\nsubnet\n$subnet\ngateway\n$gateway\n";
 }
 
 !$gateway && exit 0;

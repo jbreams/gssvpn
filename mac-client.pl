@@ -52,13 +52,11 @@ if(!$dhcp) {
 	system "ifconfig $tapdev inet $ipaddr netmask $subnet";
 }
 
-system "ipconfig waitall";
-
 if(!$gateway) {
 	exit 0;
 }
 
-system "ping -c 1 -n $gateway";
+system "ping -o -q -n $gateway";
 
 foreach my $dest (@routenets) {
 	system "route add -net $dest $gateway";

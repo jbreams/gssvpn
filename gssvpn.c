@@ -41,6 +41,7 @@
 #include <errno.h>
 #ifdef HAVE_IFADDRS_H
 #include <ifaddrs.h>
+#include <net/if_dl.h>
 #endif
 #include "libev/ev.h"
 #include "gssvpn.h"
@@ -108,8 +109,10 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	pid_t pid;
 	int ts, argc = 0;
 
-	if(!netinit_util)
+	if(!netinit_util) {
+		init = 1;
 		return 0;
+	}
 
 	init = 1;
 	last_init_activity = ev_now(loop);
@@ -223,8 +226,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		logit(-1, "Writing %d bytes to TAP", packet.length);
 		ssize_t s = write(tapfd, packet.value, packet.length);
 		if(s < 0)
-			logit(1, "Error writing packet to tap: %s",
-				strerror(errno));
+			logit(1, "Error writing packet to tap: %s", strerror(errno));
 	}
 	else if(pac == PAC_NETINIT) {
 		if(packet.length > 0) {
@@ -293,7 +295,8 @@ int get_mac() {
 		return -1;
 	}
 
-	memcpy(mac, cifp->ifa_addr->sa_data, sizeof(mac));
+	struct sockaddr_dl* sdl = (struct sockaddr_dl*)cifp->ifa_addr;
+	memcpy(mac, LLADDR(sdl), sizeof(mac));
 	freeifaddrs(ifp);
 #endif
 	return 0;
