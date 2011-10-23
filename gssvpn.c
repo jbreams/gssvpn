@@ -31,17 +31,17 @@
 #if defined(HAVE_IF_TUN)
 #include <linux/if_tun.h>
 #endif
-#ifdef HAVE_LINUX_SOCKIOS_H
-#include <linux/sockios.h>
-#else
-#include <net/if_dl.h>
-#endif
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
 #ifdef HAVE_IFADDRS_H
 #include <ifaddrs.h>
+#endif
+#ifdef HAVE_IF_DL_H
 #include <net/if_dl.h>
+#endif
+#ifdef HAVE_IF_PACKET_H
+#include <linux/if_packet.h>
 #endif
 #include "libev/ev.h"
 #include "gssvpn.h"
@@ -287,7 +287,12 @@ int get_mac() {
 	}
 
 	for(cifp = ifp;
+#ifdef HAVE_IF_PACKET_H
+		cifp && cifp->ifa_addr->sa_family = AF_PACKET &&
+			strcmp(cifp->ifa_name, tapdev) != 0;
+#else
 		cifp && strcmp(cifp->ifa_name, tapdev) != 0;
+#endif
 		cifp = cifp->ifa_next);
 	if(!cifp) {
 		logit(1, "Couldn't find %s in list of interfaces", tapdev);
@@ -295,8 +300,13 @@ int get_mac() {
 		return -1;
 	}
 
+#ifdef HAVE_IF_DL_H
 	struct sockaddr_dl* sdl = (struct sockaddr_dl*)cifp->ifa_addr;
 	memcpy(mac, LLADDR(sdl), sizeof(mac));
+#elif defined(HAVE_IF_PACKET_H)
+	struct sockaddr_ll* lll = (struct sockaddr_ll*)cifp->ifa_addr;
+	memcpy(mac, lll->sll_addr, sizeof(mac));
+#endif
 	freeifaddrs(ifp);
 #endif
 	return 0;

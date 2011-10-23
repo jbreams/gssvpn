@@ -17,6 +17,10 @@ AC_CHECK_HEADER([linux/sockios.h],
 	AC_DEFINE([HAVE_LINUX_SOCKIOS_H], [], [Uses Linux ioctl]), [], [])
 AC_CHECK_HEADER([ifaddrs.h],
 	AC_DEFINE([HAVE_IFADDRS_H], [1], [Has OSX ifaddr]), [], [])
+AC_CHECK_HEADER([linux/if_packet.h],
+	AC_DEFINE([HAVE_IF_PACKET_H], [1], [Has Linux if_packet header]), [], [])
+AC_CHECK_HEADER([net/if_dl.h],
+	AC_DEFINE([HAVE_IF_DL_H], [1], [Has if_dl header]), [], [])
 
 AC_SEARCH_LIBS([gss_accept_sec_context], [gssapi gssapi_krb5])
 AC_SEARCH_LIBS([gethostbyname], [resolve nsl])
