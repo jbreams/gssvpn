@@ -263,8 +263,10 @@ void handle_netinit(struct ev_loop * loop, struct conn * client,
 		clients_ether[eh] = client;
 	}
 
-	if(!netinit_util)
+	if(!netinit_util) {
+		send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
 		return;
+	}
 
 	if(pipe(fds) < 0) {
 		logit(1, "Error creating pipe during netinit %s", strerror(errno));
@@ -411,6 +413,8 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		handle_netinit(loop, client, &packet);
 	else if(pac == PAC_SHUTDOWN)
 		handle_shutdown(client);
+	else if(pac == PAC_ECHO)
+		send_packet(netfd, NULL, &client->addr, PAC_ECHO);
 
 	if(packet.value)
 		gss_release_buffer(&min, &packet);

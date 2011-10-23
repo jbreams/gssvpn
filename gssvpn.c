@@ -52,10 +52,10 @@ int tapfd, netfd, verbose = 0, init = 0;
 struct sockaddr_in server;
 char * tapdev, *service, *hostname, *netinit_util = NULL;
 ev_child netinit_child;
-ev_timer init_retry;
+ev_timer init_retry, keepalive_timer;
 ev_signal term;
-int daemonize = 0;
-ev_tstamp last_init_activity;
+int daemonize = 0, keepalive = 30;
+ev_tstamp last_init_activity, last_keepalive = 0;
 char * username = NULL;
 char * netinit_args[258];
 uint8_t mac[6];
@@ -90,10 +90,28 @@ void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
 	}
 }
 
+void keepalive_cb(struct ev_loop * loop, ev_timer * iot, int revents) {
+	ev_tstamp now = ev_now(loop);
+	ev_tstamp timeout = last_keepalive + keepalive;
+	if(timeout < now) {
+		send_packet(netfd, NULL, &server, PAC_ECHO);
+		ev_timer_again(loop, iot);
+	} else {
+		iot->repeat = timeout - now;
+		ev_timer_again(loop, iot);
+	}
+}
+
 void netinit_cb(struct ev_loop * loop, ev_child * c, int revents) {
 	ev_child_stop(loop, c);
 	if(c->rstatus == 0) {
 		ev_timer_stop(loop, &init_retry);
+		if(ev_is_active(&keepalive_timer))
+			ev_timer_stop(loop, &keepalive_timer);
+		else
+			ev_init(&keepalive_timer, keepalive_cb);
+		last_keepalive = ev_now(loop);
+		keepalive_cb(loop, &keepalive_timer, EV_TIMER);
 		logit(0, "Netinit okay. Starting normal operation.");
 		return;
 	}
@@ -322,7 +340,7 @@ int main(int argc, char ** argv) {
 
 	memset(&server, 0, sizeof(struct sockaddr_in));
 	
-	while((ch = getopt(argc, argv, "vh:p:s:i:a:u:")) != -1) {
+	while((ch = getopt(argc, argv, "vh:p:s:i:a:u:e:")) != -1) {
 		switch(ch) {
 			case 'v':
 				verbose = 1;
@@ -348,6 +366,9 @@ int main(int argc, char ** argv) {
 				netinit_util = strdup(optarg);
 				break;
 			}
+			case 'e':
+				keepalive = atoi(optarg);
+				break;
 			case 'u':
 				username = strdup(optarg);
 				break;
