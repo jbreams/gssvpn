@@ -26,6 +26,7 @@
 
 #ifdef GSSVPN_SERVER
 struct conn {
+	uint16_t sid;
 	gss_ctx_id_t context;
 	unsigned long gssstate;
 	struct sockaddr_in addr;
@@ -44,17 +45,17 @@ struct conn {
 
 void display_gss_err(OM_uint32 major, OM_uint32 minor);
 int send_packet(int s, gss_buffer_desc * out,
-			struct sockaddr_in * peer, char pac); 
+			struct sockaddr_in * peer, char pac, uint16_t sid); 
 int recv_packet(int s, gss_buffer_desc * out,
-			char * pacout, struct sockaddr_in * peer);
+			char * pacout, struct sockaddr_in * peer, uint16_t * sid);
 void logit(int level, char * fmt, ...);
 char hash(char * in, int len);
 int open_tap(char * dev);
 int open_net(short port);
-gss_ctx_id_t get_context(struct sockaddr_in * peer);
+gss_ctx_id_t get_context(struct sockaddr_in * peer, uint16_t sid);
 
 #ifdef GSSVPN_SERVER
-struct conn * get_conn(struct sockaddr_in * peer);
+struct conn * get_conn(struct sockaddr_in * peer, uint16_t sid);
 struct conn * get_conn_ether(char * mac);
 void unlink_conn(struct conn * conn, char which);
 #endif

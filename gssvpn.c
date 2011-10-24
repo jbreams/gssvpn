@@ -60,8 +60,9 @@ char * username = NULL;
 char * netinit_args[258];
 uint8_t mac[6];
 gss_buffer_desc netinit_buffer;
+uint16_t sessionid = 0;
 
-gss_ctx_id_t get_context(struct sockaddr_in* peer) {
+gss_ctx_id_t get_context(struct sockaddr_in * peer, uint16_t sessid) {
 	if(gssstate == GSS_S_COMPLETE)
 		return context;
 	return NULL;
@@ -79,7 +80,7 @@ void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
 		else if(init != 1) {
 			gss_buffer_desc macout = { sizeof(mac), mac };
 			logit(1, "Did not receive netinit packet from server. Retrying.");
-			send_packet(netfd, &macout, &server, PAC_NETINIT);
+			send_packet(netfd, &macout, &server, PAC_NETINIT, sessionid);
 			ev_timer_again(loop, w);
 		}
 		else
@@ -94,7 +95,7 @@ void keepalive_cb(struct ev_loop * loop, ev_timer * iot, int revents) {
 	ev_tstamp now = ev_now(loop);
 	ev_tstamp timeout = last_keepalive + keepalive;
 	if(timeout < now) {
-		send_packet(netfd, NULL, &server, PAC_ECHO);
+		send_packet(netfd, NULL, &server, PAC_ECHO, sessionid);
 		ev_timer_again(loop, iot);
 	} else {
 		iot->repeat = timeout - now;
@@ -117,7 +118,7 @@ void netinit_cb(struct ev_loop * loop, ev_child * c, int revents) {
 	}
 
 	logit(1, "Received error code from netinit util %d", c->rstatus);
-	send_packet(netfd, NULL, &server, PAC_SHUTDOWN);
+	send_packet(netfd, NULL, &server, PAC_SHUTDOWN, sessionid);
 	ev_break(loop, EVBREAK_ALL);
 	init = 0;
 }
@@ -212,14 +213,14 @@ int do_gssinit(gss_buffer_desc * in) {
 	gss_release_name(&min, &target_name);
 	if(tokenout.length) {
 		int rc;
-		rc = send_packet(netfd, &tokenout, &server, PAC_GSSINIT);
+		rc = send_packet(netfd, &tokenout, &server, PAC_GSSINIT, sessionid);
 		gss_release_buffer(&min, &tokenout);
 		if(rc < 0)
 			return -1;
 	}
 	if(gssstate == GSS_S_COMPLETE && init != 1) {
 		gss_buffer_desc macout = { sizeof(mac), mac };
-		send_packet(netfd, &macout, &server, PAC_NETINIT);
+		send_packet(netfd, &macout, &server, PAC_NETINIT, sessionid);
 	}
 	return 0;
 }
@@ -231,7 +232,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	gss_buffer_desc packet = GSS_C_EMPTY_BUFFER;
 	OM_uint32 min;
 
-	rc = recv_packet(netfd, &packet, &pac, &peer);
+	rc = recv_packet(netfd, &packet, &pac, &peer, &sessionid);
 	if(rc == -2) {
 		logit(1, "Reinitializing GSSAPI context");
 		if(context != GSS_C_NO_CONTEXT) {
@@ -240,7 +241,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		}
 		do_gssinit(NULL);
 	}
-	if(rc != 0)
+	if(rc < 0)
 		return;
 	
 	if(pac == PAC_DATA) {
@@ -282,7 +283,7 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	}
 	logit(-1, "Received packet from TAP of %d bytes", plaintext.length);
 
-	rc = send_packet(netfd, &plaintext, &server, PAC_DATA);
+	rc = send_packet(netfd, &plaintext, &server, PAC_DATA, sessionid);
 	if(rc == -2) {
 		logit(0, "Reinitializing GSSAPI context");
 		if(context != GSS_C_NO_CONTEXT) {

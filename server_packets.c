@@ -31,16 +31,16 @@
 extern struct conn * clients_ip[255];
 extern struct conn * clients_ether[255];
 extern int verbose;
+uint8_t sid_counter = 1;
 
-struct conn * get_conn(struct sockaddr_in * peer) {
+struct conn * get_conn(struct sockaddr_in * peer, uint16_t sid) {
 	struct conn * client;
 	struct sockaddr * addr = (struct sockaddr*)peer;
-	uint8_t h = hash(addr->sa_data, 6);
+	uint8_t h = sid ? sid & 0xff : hash(addr->sa_data, 6);
 	char * ipstr;
 
 	client = clients_ip[h];
-	while(client && memcmp(&client->addr, peer,
-			sizeof(struct sockaddr_in)) != 0)
+	while(client && client->sid != sid)
 		client = client->ipnext;
 	if(client)
 		return client;
@@ -53,6 +53,8 @@ struct conn * get_conn(struct sockaddr_in * peer) {
 	memset(client, 0, sizeof(struct conn));
 	client->ipnext = clients_ip[h];
 	clients_ip[h] = client;
+	client->sid = ((uint16_t)sid_counter++) << 8;
+	client->sid |= h;
 
 	memcpy(&client->addr, peer, sizeof(struct sockaddr_in));
 	ipstr = inet_ntoa(peer->sin_addr);
@@ -61,8 +63,8 @@ struct conn * get_conn(struct sockaddr_in * peer) {
 	return client;
 }
 
-gss_ctx_id_t get_context(struct sockaddr_in * peer) {
-	struct conn * client = get_conn(peer);
+gss_ctx_id_t get_context(struct sockaddr_in * peer, uint16_t sid) {
+	struct conn * client = get_conn(peer, sid);
 	if(!client)
 		return NULL;
 	if(client->gssstate != GSS_S_COMPLETE)

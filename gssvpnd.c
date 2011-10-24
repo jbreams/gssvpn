@@ -140,12 +140,12 @@ void conn_timeout_cb(struct ev_loop * loop, ev_timer * iot, int revents) {
 		if(killontimeout) {
 			logit(0, "Connection %s (%s:%d) has timed out. Shutting down.",
 				c->princname, c->ipstr, c->addr.sin_port);
-			send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN);
+			send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN, c->sid);
 			handle_shutdown(c);
 		} else {
 			logit(0, "Connection %s (%s:%d) has timed out. Requesting GSSINIT.",
 				c->princname, c->ipstr, c->addr.sin_port);
-			send_packet(netfd, NULL, &c->addr, PAC_GSSINIT);
+			send_packet(netfd, NULL, &c->addr, PAC_GSSINIT, c->sid);
 		}
 	}
 	ev_timer_stop(loop, iot);
@@ -167,13 +167,13 @@ void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 	if(ioc->rstatus != 0) {
 		logit(0, "Rejecting client %s:%d (%s)", c->ipstr,
 			c->addr.sin_port, c->princname);
-		send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN);
+		send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN, c->sid);
 		handle_shutdown(c);
 		return;
 	}
 
 	send_packet(netfd, c->ni.length > 0 ? &c->ni : NULL,
-		&c->addr, PAC_NETINIT);
+		&c->addr, PAC_NETINIT, c->sid);
 	free(c->ni.value);
 	c->ni.length = 0;
 	c->ni.value = NULL;
@@ -203,14 +203,16 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 					cur = cur->ethernext;
 					continue;
 				}
-				rc = send_packet(netfd, &plaintext, &cur->addr, PAC_DATA);
+				rc = send_packet(netfd, &plaintext, &cur->addr,
+					PAC_DATA, cur->sid);
 				if(rc == -2) {
 					logit(1, "Reinitializing GSSAPI context");
 					if(cur->context != GSS_C_NO_CONTEXT) {
 						gss_delete_sec_context(&lmin, &cur->context, NULL);
 						cur->context = GSS_C_NO_CONTEXT;
 					}
-					send_packet(netfd, NULL, &cur->addr, PAC_GSSINIT);
+					send_packet(netfd, NULL, &cur->addr,
+						PAC_GSSINIT, cur->sid);
 				}
 				cur = cur->ethernext;
 			}
@@ -231,14 +233,16 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		return;
 	}
 
-	rc = send_packet(netfd, &plaintext, &client->addr, PAC_DATA);
+	rc = send_packet(netfd, &plaintext, &client->addr,
+		PAC_DATA, client->sid);
 	if(rc == -2) {
 		logit(1, "Reinitializing GSSAPI context");
 		if(client->context != GSS_C_NO_CONTEXT) {
 			gss_delete_sec_context(&lmin, &client->context, NULL);
 			client->context = GSS_C_NO_CONTEXT;
 		}
-		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT);
+		send_packet(netfd, NULL, &client->addr,
+			PAC_GSSINIT, client->sid);
 	}
 }
 
@@ -264,13 +268,13 @@ void handle_netinit(struct ev_loop * loop, struct conn * client,
 	}
 
 	if(!netinit_util) {
-		send_packet(netfd, NULL, &client->addr, PAC_NETINIT);
+		send_packet(netfd, NULL, &client->addr, PAC_NETINIT, client->sid);
 		return;
 	}
 
 	if(pipe(fds) < 0) {
 		logit(1, "Error creating pipe during netinit %s", strerror(errno));
-		send_packet(netfd, NULL, &client->addr, PAC_SHUTDOWN);
+		send_packet(netfd, NULL, &client->addr, PAC_SHUTDOWN, client->sid);
 		handle_shutdown(client);
 		return;
 	}
@@ -278,7 +282,7 @@ void handle_netinit(struct ev_loop * loop, struct conn * client,
 	if(fcntl(fds[0], F_SETFL, O_NONBLOCK) < 0) {
 		logit(1, "Error setting pipe to non-blocking during netinit %s",
 			strerror(errno));
-		send_packet(netfd, NULL, &client->addr, PAC_SHUTDOWN);
+		send_packet(netfd, NULL, &client->addr, PAC_SHUTDOWN, client->sid);
 		handle_shutdown(client);
 		return;
 	}
@@ -345,7 +349,8 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 	}
 	client->gssstate = maj;
 	if(maj == GSS_S_CONTINUE_NEEDED) {
-		send_packet(netfd, &output, &client->addr, PAC_GSSINIT);
+		send_packet(netfd, &output, &client->addr,
+			PAC_GSSINIT, client->sid);
 		return;
 	}
 
@@ -372,24 +377,25 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	struct sockaddr_in peer;
 	struct conn * client;
 	OM_uint32 min;
-	int rc = recv_packet(netfd, &packet, &pac, &peer);
+	uint16_t sid;
+	int rc = recv_packet(netfd, &packet, &pac, &peer, &sid);
 	if(rc == -2) {
-		client = get_conn(&peer);
+		client = get_conn(&peer, sid);
 		logit(1, "Reinitializing GSSAPI context");
 		if(client->context != GSS_C_NO_CONTEXT) {
 			gss_delete_sec_context(&min, &client->context, NULL);
 			client->context = GSS_C_NO_CONTEXT;
 		}
-		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT);
+		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT, sid);
 		return;
 	} else if(rc < 0)
 		return;
-	else if((client = get_conn(&peer)) == NULL)
+	else if((client = get_conn(&peer, sid)) == NULL)
 		return;
 
 	if((client->gssstate == GSS_S_CONTINUE_NEEDED ||
 		client->context == GSS_C_NO_CONTEXT) && pac != PAC_GSSINIT) {
-		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT);
+		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT, sid);
 		if(packet.length)
 			gss_release_buffer(&min, &packet);
 		return;
@@ -418,7 +424,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	else if(pac == PAC_SHUTDOWN)
 		handle_shutdown(client);
 	else if(pac == PAC_ECHO)
-		send_packet(netfd, NULL, &client->addr, PAC_ECHO);
+		send_packet(netfd, NULL, &client->addr, PAC_ECHO, sid);
 
 	if(packet.value)
 		gss_release_buffer(&min, &packet);
@@ -432,7 +438,7 @@ void term_cb(struct ev_loop * l, ev_signal * w, int r) {
 		struct conn * c = clients_ip[i];
 		while(c) {
 			struct conn * save = c->ipnext;
-			send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN);
+			send_packet(netfd, NULL, &c->addr, PAC_SHUTDOWN, c->sid);
 			handle_shutdown(c);
 			c = save;
 		}

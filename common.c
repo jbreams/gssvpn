@@ -44,6 +44,7 @@ extern int verbose;
 struct header {
 	uint16_t len;
 	uint16_t packed;
+	uint16_t sid;
 	uint8_t pac;
 };
 char pbuff[8192];
@@ -187,7 +188,7 @@ int open_net(short port) {
 }
 
 int recv_packet(int s, gss_buffer_desc * out,
-		char * pacout, struct sockaddr_in * peer) {
+		char * pacout, struct sockaddr_in * peer, uint16_t * sid) {
 	socklen_t ral = sizeof(struct sockaddr_in);
 	struct header ph;
 	OM_uint32 maj, min;
@@ -212,12 +213,14 @@ int recv_packet(int s, gss_buffer_desc * out,
 	}
 	else if(verbose)
 		logit(-1, "Received %d bytes from remote host", r);
-	ctx = get_context(peer);
+	ctx = get_context(peer, sid);
 
 	memcpy(&ph, pbuff, sizeof(ph));	
 	ph.len = ntohs(ph.len);
 	ph.packed = ntohs(ph.packed);
+	ph.sid = ntohs(ph.sid);
 	*pacout = ph.pac;
+	*sid = ph.sid;
 
 	if(ph.len == 0 || !out)
 		return 0;
@@ -246,12 +249,13 @@ int recv_packet(int s, gss_buffer_desc * out,
 }
 
 int send_packet(int s, gss_buffer_desc * out,
-		struct sockaddr_in * peer, char pac) {
+		struct sockaddr_in * peer, char pac, uint16_t sid) {
 	struct header ph;
 	ssize_t sent;
 	size_t tosend;
 	ph.pac = pac;
-	gss_ctx_id_t ctx = get_context(peer);
+	ph.sid = htons(sid);
+	gss_ctx_id_t ctx = get_context(peer, sid);
 	int rc;
 
 	if(out && out->length)
