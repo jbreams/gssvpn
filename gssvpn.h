@@ -19,6 +19,7 @@
 #define PAC_NETINIT 1
 #define PAC_SHUTDOWN 3
 #define PAC_ECHO 4
+#define PAC_NETSTART 5
 
 #define CLIENT_IP 1
 #define CLIENT_ETHERNET 2

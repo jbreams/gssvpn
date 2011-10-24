@@ -72,15 +72,9 @@ void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
 	ev_tstamp now = ev_now(loop);
 	ev_tstamp timeout = last_init_activity + 10;
 	if(timeout < now) {
-		if(gssstate != GSS_S_COMPLETE) {
+		if(gssstate != GSS_S_COMPLETE || init < 1) {
 			logit(1, "Did not receive GSS packet from server. Retrying.");
 			do_gssinit(NULL);
-			ev_timer_again(loop, w);
-		}
-		else if(init != 1) {
-			gss_buffer_desc macout = { sizeof(mac), mac };
-			logit(1, "Did not receive netinit packet from server. Retrying.");
-			send_packet(netfd, &macout, &server, PAC_NETINIT, sessionid);
 			ev_timer_again(loop, w);
 		}
 		else
@@ -218,10 +212,7 @@ int do_gssinit(gss_buffer_desc * in) {
 		if(rc < 0)
 			return -1;
 	}
-	if(gssstate == GSS_S_COMPLETE && init != 1) {
-		gss_buffer_desc macout = { sizeof(mac), mac };
-		send_packet(netfd, &macout, &server, PAC_NETINIT, sessionid);
-	}
+
 	return 0;
 }
 
@@ -260,6 +251,10 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		do_gssinit(&packet);
 	else if(pac == PAC_SHUTDOWN)
 		ev_break(loop, EVBREAK_ALL);
+	else if(pac == PAC_NETSTART) {
+		gss_buffer_desc macout = { sizeof(mac), mac };
+		send_packet(netfd, &macout, &server, PAC_NETINIT, sessionid);
+	}
 	if(packet.length && pac != PAC_NETINIT)
 		gss_release_buffer(&min, &packet);
 }

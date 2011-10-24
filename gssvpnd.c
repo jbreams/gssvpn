@@ -369,6 +369,9 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 		client->conntimeout.data = client;
 		conn_timeout_cb(loop, &client->conntimeout, EV_TIMER);
 	}
+	if(memcmp(client->mac, &ether_empty, sizeof(client->mac)) == 0)
+		send_packet(netfd, NULL, &client->addr,
+			PAC_NETSTART, client->sid);
 }
 
 void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {

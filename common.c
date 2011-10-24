@@ -213,7 +213,6 @@ int recv_packet(int s, gss_buffer_desc * out,
 	}
 	else if(verbose)
 		logit(-1, "Received %d bytes from remote host", r);
-	ctx = get_context(peer, sid);
 
 	memcpy(&ph, pbuff, sizeof(ph));	
 	ph.len = ntohs(ph.len);
@@ -232,6 +231,7 @@ int recv_packet(int s, gss_buffer_desc * out,
 		return -1;
 	}
 
+	ctx = get_context(peer, ph.sid);
 	if(ctx != GSS_C_NO_CONTEXT && ph.pac != PAC_GSSINIT) {
 		maj = gss_unwrap(&min, ctx, &crypted, out, NULL, NULL);
 		if(maj != GSS_S_COMPLETE) {
