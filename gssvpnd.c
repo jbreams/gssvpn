@@ -357,8 +357,12 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 	gss_release_name(&lmin, &client_name);
 
 	if(timeout != GSS_C_INDEFINITE) {
+		if(ev_is_active(&client->conntimeout))
+			ev_timer_stop(loop, &client->conntimeout);
+		else
+			ev_init(&client->conntimeout, conn_timeout_cb);
 		client->conntimeout.data = client;
-		conn_timeout_cb(loop, &client->conntimeout, 0);
+		conn_timeout_cb(loop, &client->conntimeout, EV_TIMER);
 	}
 }
 
