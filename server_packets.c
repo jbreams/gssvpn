@@ -56,8 +56,7 @@ struct conn * get_conn(struct sockaddr_in * peer, uint16_t sid) {
 	client->sid = ((uint16_t)sid_counter++) << 8;
 	client->sid |= h;
 
-	ipstr = inet_ntoa(peer->sin_addr);
-	strcpy(client->ipstr, ipstr);
+	client->context = GSS_C_NO_CONTEXT;
 	client->gssstate = GSS_S_CONTINUE_NEEDED;
 	return client;
 }

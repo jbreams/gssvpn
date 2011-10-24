@@ -398,7 +398,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 
 	if(memcmp(&client->addr, &peer, sizeof(client->addr)) != 0) {
 		memcpy(&client->addr, &peer, sizeof(client->addr));
-		char *ipstr = inet_ntoa(&peer);
+		char *ipstr = inet_ntoa(peer->sin_addr);
 		strcpy(client->ipstr, ipstr);
 	}
 
