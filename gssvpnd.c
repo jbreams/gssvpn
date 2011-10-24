@@ -396,6 +396,12 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	else if((client = get_conn(&peer, sid)) == NULL)
 		return;
 
+	if(memcmp(&client->addr, &peer, sizeof(client->addr)) != 0) {
+		memcpy(&client->addr, &peer, sizeof(client->addr));
+		char *ipstr = inet_ntoa(&peer);
+		strcpy(client->ipstr, ipstr);
+	}
+
 	if((client->gssstate == GSS_S_CONTINUE_NEEDED ||
 		client->context == GSS_C_NO_CONTEXT) && pac != PAC_GSSINIT) {
 		send_packet(netfd, NULL, &client->addr, PAC_GSSINIT, sid);

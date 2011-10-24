@@ -42,8 +42,6 @@ extern int daemonize;
 extern int verbose;
 
 struct header {
-	uint16_t len;
-	uint16_t packed;
 	uint16_t sid;
 	uint8_t pac;
 };
@@ -113,8 +111,8 @@ int open_tap(char * dev) {
 		logit(1, "Error opening TAP device: %s",
 					strerror(tapfd));
 		return -1;
-	} else if(verbose)
-		logit(-1, "Opened TAP device to fd %d", tapfd);
+	}
+	logit(-1, "Opened TAP device to fd %d", tapfd);
 
 	ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
 	if(dev)
@@ -126,8 +124,8 @@ int open_tap(char * dev) {
 					ifr.ifr_name, strerror(rc));
 		close(tapfd);
 		return -1;
-	} else if(verbose)
-		logit(-1, "Configured TAP interface %s", ifr.ifr_name);
+	}
+	logit(-1, "Configured TAP interface %s", ifr.ifr_name);
 #else
 	char path[255];
 	snprintf(path, 255, "/dev/%s", dev);
@@ -211,20 +209,17 @@ int recv_packet(int s, gss_buffer_desc * out,
 			return -1;
 		}
 	}
-	else if(verbose)
-		logit(-1, "Received %d bytes from remote host", r);
+	logit(-1, "Received %d bytes from remote host", r);
 
 	memcpy(&ph, pbuff, sizeof(ph));	
-	ph.len = ntohs(ph.len);
-	ph.packed = ntohs(ph.packed);
 	ph.sid = ntohs(ph.sid);
 	*pacout = ph.pac;
 	*sid = ph.sid;
 
-	if(ph.len == 0 || !out)
+	if(r == sizeof(ph) || !out)
 		return 0;
 
-	rc = lzo1x_decompress_safe(pbuff + sizeof(ph), ph.packed,
+	rc = lzo1x_decompress_safe(pbuff + sizeof(ph), r - sizeof(ph),
 		crypted.value, &crypted.length, lzowrk);
 	if(rc != 0) {
 		logit(1, "Error decompressing packet %d", rc);
@@ -240,9 +235,9 @@ int recv_packet(int s, gss_buffer_desc * out,
 			return -2;
 		}
 	} else {
-		out->value = malloc(ph.len);
-		out->length = ph.len;
-		memcpy(out->value, crypted.value, ph.len);
+		out->value = malloc(crypted.length);
+		out->length = crypted.length;
+		memcpy(out->value, crypted.value, crypted.length);
 	}
 
 	return 0;
@@ -258,10 +253,7 @@ int send_packet(int s, gss_buffer_desc * out,
 	gss_ctx_id_t ctx = get_context(peer, sid);
 	int rc;
 
-	if(out && out->length)
-		ph.len = htons(out->length);
-	else {
-		ph.len = 0;
+	if(!(out && out->length)) {
 		sent = sendto(s, &ph, sizeof(ph), 0,
 			(struct sockaddr*)peer, sizeof(struct sockaddr_in));
 		if(sent < 0) {
@@ -282,11 +274,10 @@ int send_packet(int s, gss_buffer_desc * out,
 			display_gss_err(maj, min);
 			return -2;
 		}
-
 		rc = lzo1x_1_compress(pout.value, pout.length,
 			pbuff + sizeof(ph), &tosend, lzowrk);
 		gss_release_buffer(&min, &pout);
-	} else	
+	} else
 		rc = lzo1x_1_compress(out->value, out->length,
 			pbuff + sizeof(ph), &tosend, lzowrk);
 
@@ -295,7 +286,6 @@ int send_packet(int s, gss_buffer_desc * out,
 		return -1;
 	}
 	
-	ph.packed = htons(tosend);
 	memcpy(pbuff, &ph, sizeof(ph));
 	tosend += sizeof(ph);
 	
@@ -306,8 +296,7 @@ int send_packet(int s, gss_buffer_desc * out,
 			strerror(errno));
 		return -1;
 	}
-	else if(verbose)
-		logit(-1, "Sent %d bytes to remote host", sent);
+	logit(-1, "Sent %d bytes to remote host", sent);
 
 	return 0;
 }
