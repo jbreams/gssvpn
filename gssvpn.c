@@ -180,10 +180,13 @@ int do_gssinit(gss_buffer_desc * in) {
 	OM_uint32 min, maj, timeout;
 
 #ifdef HAVE_KERBEROSLOGIN_H
-	KLPrincipal kerb_user_id;
-	KLCreatePrincipalFromString(username, kerberosVersion_V5, &kerb_user_id);
-	maj = KLAcquireInitialTickets(kerb_user_id, NULL, NULL, NULL);
-	KLDisposePrincipal(kerb_user_id);
+	if(username) {
+		KLPrincipal kerb_user_id;
+		KLCreatePrincipalFromString(username, kerberosVersion_V5,
+			&kerb_user_id);
+		maj = KLAcquireInitialTickets(kerb_user_id, NULL, NULL, NULL);
+		KLDisposePrincipal(kerb_user_id);
+	}
 #endif
 	tokenout.length = snprintf(prodid, 512, "%s@%s", service, hostname);
 	gssstate = gss_import_name(&min, &tokenout, 
