@@ -306,7 +306,7 @@ int get_mac() {
 
 	for(cifp = ifp;
 #ifdef HAVE_IF_PACKET_H
-		cifp && cifp->ifa_addr->sa_family = AF_PACKET &&
+		cifp && cifp->ifa_addr->sa_family == AF_PACKET &&
 			strcmp(cifp->ifa_name, tapdev) != 0;
 #else
 		cifp && strcmp(cifp->ifa_name, tapdev) != 0;
