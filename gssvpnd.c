@@ -398,8 +398,8 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 
 	if(memcmp(&client->addr, &peer, sizeof(client->addr)) != 0) {
 		memcpy(&client->addr, &peer, sizeof(client->addr));
-		char *ipstr = inet_ntoa(peer->sin_addr);
-		strcpy(client->ipstr, ipstr);
+		inet_ntop(peer.sin_family, peer.sin_addr,
+			client->ipstr, sizeof(client->ipstr));
 	}
 
 	if((client->gssstate == GSS_S_CONTINUE_NEEDED ||

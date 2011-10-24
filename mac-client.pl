@@ -57,6 +57,9 @@ if(!$gateway) {
 }
 
 system "ping -o -q -n $gateway";
+if($? != 0) {
+	die "Unable to ping gateway.";
+}
 
 foreach my $dest (@routenets) {
 	system "route add -net $dest $gateway";
