@@ -100,7 +100,7 @@ char hash(char * in, int len) {
 	return hash;
 }
 
-int open_tap(char * dev) {
+int open_tap(char ** dev) {
 	struct ifreq ifr;
 	memset(&ifr, 0, sizeof(struct ifreq));
 #ifdef HAVE_IF_TUN
@@ -115,8 +115,8 @@ int open_tap(char * dev) {
 	logit(-1, "Opened TAP device to fd %d", tapfd);
 
 	ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
-	if(dev)
-		strncpy(ifr.ifr_name, dev, sizeof(ifr.ifr_name));
+	if(*dev)
+		strncpy(ifr.ifr_name, *dev, sizeof(ifr.ifr_name));
 	rc = ioctl(tapfd, TUNSETIFF, (void*)&ifr);
 	if(rc < 0) {
 		rc = errno;
@@ -127,17 +127,29 @@ int open_tap(char * dev) {
 	}
 	logit(-1, "Configured TAP interface %s", ifr.ifr_name);
 #else
+	int i, tapfd;
 	char path[255];
-	snprintf(path, 255, "/dev/%s", dev);
-	int tapfd = open(path, O_RDWR);
+
+	if(!dev) {
+		*dev = malloc(sizeof("tapXXXX"));
+		for(i = 0; i < 255 && tapfd < 0; i++) {
+			snprintf(*dev, sizeof("tapXXXX"), "tap%d", i);
+			snprintf(path, sizeof(path), "/dev/%s", *dev);
+			tapfd = open(path, O_RDWR);
+		}
+	} else {
+		snprintf(path, sizeof(path), "/dev/%s", *dev);
+		tapfd = open(path, O_RDWR);
+	}
+
 	if(tapfd < 0) {
 		tapfd = errno;
 		logit(1, "Error opening TAP device %s: %s",
-					path, strerror(tapfd));
+					*dev, strerror(tapfd));
 		return -1;
 	}
 
-	strncpy(ifr.ifr_name, dev, sizeof(ifr.ifr_name));
+	strncpy(ifr.ifr_name, *dev, sizeof(ifr.ifr_name));
 #endif
 
 	int ts = socket(PF_UNIX, SOCK_STREAM, 0);

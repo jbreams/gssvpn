@@ -54,6 +54,7 @@ char * tapdev, *service, *hostname, *netinit_util = NULL;
 ev_child netinit_child;
 ev_timer init_retry, keepalive_timer;
 ev_signal term;
+ev_io tapio, netio;
 int daemonize = 0, keepalive = 30;
 ev_tstamp last_init_activity, last_keepalive = 0;
 char * username = NULL;
@@ -74,7 +75,7 @@ void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
 	if(timeout < now) {
 		if(gssstate != GSS_S_COMPLETE || init < 1) {
 			logit(1, "Did not receive GSS packet from server. Retrying.");
-			do_gssinit(NULL);
+			do_gssinit(loop, NULL);
 			ev_timer_again(loop, w);
 		}
 		else
@@ -168,11 +169,13 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	return 0;
 }
 
-int do_gssinit(gss_buffer_desc * in) {
+int do_gssinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	gss_name_t target_name;
 	char prodid[512];
 	gss_buffer_desc tokenout = { 512, &prodid };
 	OM_uint32 min, maj, timeout;
+
+	ev_io_stop(loop, &tapio);
 
 #ifdef HAVE_KERBEROSLOGIN_H
 	if(username) {
@@ -212,7 +215,7 @@ int do_gssinit(gss_buffer_desc * in) {
 		if(rc < 0)
 			return -1;
 	}
-
+	ev_io_start(loop, &tapio);
 	return 0;
 }
 
@@ -230,7 +233,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 			gss_delete_sec_context(&min, &context, NULL);
 			context = GSS_C_NO_CONTEXT;
 		}
-		do_gssinit(NULL);
+		do_gssinit(loop, NULL);
 	}
 	if(rc < 0)
 		return;
@@ -248,7 +251,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		} else
 			do_netinit(loop, NULL);
 	} else if(pac == PAC_GSSINIT)
-		do_gssinit(&packet);
+		do_gssinit(loop, &packet);
 	else if(pac == PAC_SHUTDOWN)
 		ev_break(loop, EVBREAK_ALL);
 	else if(pac == PAC_NETSTART) {
@@ -285,7 +288,7 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 			gss_delete_sec_context(&min, &context, NULL);
 			context = GSS_C_NO_CONTEXT;
 		}
-		do_gssinit(NULL);
+		do_gssinit(loop, NULL);
 	}
 	return;
 }
@@ -330,7 +333,6 @@ int get_mac() {
 }
 
 int main(int argc, char ** argv) {
-	ev_io tapio, netio;
 	struct ev_loop * loop;
 	char ch;
 	short port = 0;
@@ -401,7 +403,7 @@ int main(int argc, char ** argv) {
 	if(netfd < 0)
 		return -1;
 
-	tapfd = open_tap(tapdev);
+	tapfd = open_tap(&tapdev);
 	if(tapfd < 0)
 		return -1;
 
@@ -416,7 +418,7 @@ int main(int argc, char ** argv) {
 	ev_signal_init(&term, term_cb, SIGTERM|SIGQUIT);
 	ev_signal_start(loop, &term);
 
-	if(do_gssinit(NULL) < 0) {
+	if(do_gssinit(loop, NULL) < 0) {
 		close(tapfd);
 		close(netfd);
 		return -1;

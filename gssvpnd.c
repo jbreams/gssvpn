@@ -465,7 +465,7 @@ int main(int argc, char ** argv) {
 	ev_signal term;
 	struct ev_loop * loop;
 	openlog("gssvpnd", 0, LOG_DAEMON);
-	char ch;
+	char ch, *tapdev = NULL;
 	short port = 2106;
 	struct oc * cur;
 	uid_t dropto = 0;
@@ -479,7 +479,7 @@ int main(int argc, char ** argv) {
 				port = atoi(optarg);
 				break;
 			case 'i':
-				tapfd = open_tap("tap0");
+				tapdev = strdup(optarg);
 				break;
 			case 's':
 				rc = get_server_creds(&srvcreds, optarg);
@@ -521,10 +521,8 @@ int main(int argc, char ** argv) {
 	if(netfd < 0)
 		return -1;
 
-	if(tapfd < 0) {
+	if(open_tap(&tapdev))
 		logit(1, "No tap device defined");
-		return -1;
-	}
 
 	if(dropto)
 		setuid(dropto);

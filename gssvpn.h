@@ -51,7 +51,7 @@ int recv_packet(int s, gss_buffer_desc * out,
 			char * pacout, struct sockaddr_in * peer, uint16_t * sid);
 void logit(int level, char * fmt, ...);
 char hash(char * in, int len);
-int open_tap(char * dev);
+int open_tap(char ** dev);
 int open_net(short port);
 gss_ctx_id_t get_context(struct sockaddr_in * peer, uint16_t sid);
 

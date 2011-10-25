@@ -6,9 +6,8 @@ AC_DEFINE([EV_CONFIG_H], [../config.h], [Make libev use global config.h])
 
 AC_PROG_RANLIB
 
-AC_INCLUDES_DEFAULT
-AC_CHECK_HEADERS([fcntl.h netdb.h netinit/in.h pwd.h sys/ioctl syslog.h net/ethernet.h arpa/inet.h])
-AC_CHECK_HEADER([net/if.h])
+AC_CHECK_HEADERS([fcntl.h netdb.h netinit/in.h pwd.h sys/ioctl.h sys/socket.h syslog.h net/ethernet.h arpa/inet.h])
+AC_CHECK_HEADER([net/if.h], [], [], [#include <sys/socket.h>])
 AC_CHECK_HEADER([gssapi/gssapi.h], [],
 	[AC_MSG_ERROR([Requires GSSAPI header])])
 AC_CHECK_HEADER([linux/if_tun.h],
