@@ -45,7 +45,7 @@ struct header {
 	uint16_t sid;
 	uint8_t pac;
 };
-char pbuff[8192];
+uint8_t pbuff[8192];
 uint8_t lzowrk[LZO1X_1_MEM_COMPRESS];
 
 void logit(int level, char * fmt, ...) {
@@ -92,8 +92,8 @@ unsigned char mixtable[256] = {
 149, 80, 170, 68, 6, 169, 234, 151
 };
 
-char hash(char * in, int len) {
-	char hash = len;
+uint8_t hash(uint8_t * in, int len) {
+	uint8_t hash = len;
 	int i;
 	for(i = len; i > 0;)
 		hash = mixtable[hash ^ in[--i]];

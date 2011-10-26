@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <net/if.h>
 #include <net/ethernet.h>
+#include <arpa/inet.h>
 #if defined(HAVE_IF_TUN)
 #include <linux/if_tun.h>
 #endif
@@ -153,9 +154,6 @@ void conn_timeout_cb(struct ev_loop * loop, ev_timer * iot, int revents) {
 
 void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 	struct conn * c = (struct conn*)ioc->data;
-	const size_t tosend = c->ni.length + sizeof(uint16_t);
-	gss_buffer_desc out;
-	uint8_t eh;
 
 	ev_child_stop(loop, ioc);
 	if(ev_is_active(&c->nipipe)) {
@@ -299,7 +297,6 @@ void handle_netinit(struct ev_loop * loop, struct conn * client,
 	if(pid == 0) {
 		char portstr[6];
 		char * filename = netinit_util + (strlen(netinit_util) - 1);
-		uint8_t i;
 
 		close(netfd);
 		close(tapfd);
@@ -329,7 +326,6 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 	gss_name_t client_name;
 	gss_buffer_desc output, nameout;
 	OM_uint32 flags, lmin, maj, min, timeout;
-	int nameeq = 0;
 
 	if(client->gssstate == GSS_S_COMPLETE && 
 		client->context != GSS_C_NO_CONTEXT) {
@@ -398,7 +394,7 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 
 	if(memcmp(&client->addr, &peer, sizeof(client->addr)) != 0) {
 		memcpy(&client->addr, &peer, sizeof(client->addr));
-		inet_ntop(peer.sin_family, peer.sin_addr,
+		inet_ntop(peer.sin_family, &peer.sin_addr,
 			client->ipstr, sizeof(client->ipstr));
 	}
 
@@ -440,7 +436,6 @@ void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 }
 
 void term_cb(struct ev_loop * l, ev_signal * w, int r) {
-	OM_uint32 min;
 	uint8_t i;
 	
 	for(i = 0; i < 255; i++) {
@@ -467,7 +462,6 @@ int main(int argc, char ** argv) {
 	openlog("gssvpnd", 0, LOG_DAEMON);
 	char ch, *tapdev = NULL;
 	short port = 2106;
-	struct oc * cur;
 	uid_t dropto = 0;
 
 	while((ch = getopt(argc, argv, "ds:p:i:va:u:t")) != -1) {

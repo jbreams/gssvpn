@@ -36,8 +36,7 @@ uint8_t sid_counter = 1;
 struct conn * get_conn(struct sockaddr_in * peer, uint16_t sid) {
 	struct conn * client;
 	struct sockaddr * addr = (struct sockaddr*)peer;
-	uint8_t h = sid ? sid & 0xff : hash(addr->sa_data, 6);
-	char * ipstr;
+	uint8_t h = sid ? sid & 0xff : hash((uint8_t*)addr->sa_data, 6);
 
 	client = clients_ip[h];
 	while(client && client->sid != sid)
@@ -75,7 +74,7 @@ void unlink_conn(struct conn * conn, char which) {
 	struct conn * last = NULL;
 	if(which & CLIENT_IP) {
 		struct sockaddr * addr = (struct sockaddr*)&conn->addr;
-		h = hash(addr->sa_data, 6);
+		h = hash((uint8_t*)addr->sa_data, 6);
 		struct conn * cur = clients_ip[h];
 		while(cur && cur != conn) {
 			last = cur;

@@ -23,9 +23,6 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <gssapi/gssapi.h>
-#ifdef HAVE_KERBEROSLOGIN_H
-#include <Kerberos/KerberosLogin.h>
-#endif
 #include <unistd.h>
 #include <net/if.h>
 #if defined(HAVE_IF_TUN)
@@ -69,23 +66,6 @@ gss_ctx_id_t get_context(struct sockaddr_in * peer, uint16_t sessid) {
 	return NULL;
 }
 
-void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
-	ev_tstamp now = ev_now(loop);
-	ev_tstamp timeout = last_init_activity + 10;
-	if(timeout < now) {
-		if(gssstate != GSS_S_COMPLETE || init < 1) {
-			logit(1, "Did not receive GSS packet from server. Retrying.");
-			do_gssinit(loop, NULL);
-			ev_timer_again(loop, w);
-		}
-		else
-			ev_timer_stop(loop, w);
-	} else {
-		w->repeat = timeout - now;
-		ev_timer_again(loop, w);	
-	}
-}
-
 void keepalive_cb(struct ev_loop * loop, ev_timer * iot, int revents) {
 	ev_tstamp now = ev_now(loop);
 	ev_tstamp timeout = last_keepalive + keepalive;
@@ -119,9 +99,9 @@ void netinit_cb(struct ev_loop * loop, ev_child * c, int revents) {
 }
 
 int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
-	uint8_t * lock;
+	char * lock;
 	pid_t pid;
-	int ts, argc = 0;
+	int argc = 0;
 
 	if(!netinit_util) {
 		init = 1;
@@ -141,10 +121,10 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	netinit_args[argc++] = "init";
 
 	if(in) {
-		lock = in->value;
-		while(lock - (uint8_t*)in->value < in->length && argc < 255) {
-			uint8_t * save = lock;
-			while(*lock != '\n' && lock - (uint8_t*)in->value < in->length)
+		lock = (char*)in->value;
+		while(lock - (char*)in->value < in->length && argc < 255) {
+			char * save = lock;
+			while(*lock != '\n' && lock - (char*)in->value < in->length)
 				lock++;
 			if(*lock == '\n') {
 				*lock = 0;
@@ -173,19 +153,10 @@ int do_gssinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	gss_name_t target_name;
 	char prodid[512];
 	gss_buffer_desc tokenout = { 512, &prodid };
-	OM_uint32 min, maj, timeout;
+	OM_uint32 min;
 
 	ev_io_stop(loop, &tapio);
 
-#ifdef HAVE_KERBEROSLOGIN_H
-	if(username) {
-		KLPrincipal kerb_user_id;
-		KLCreatePrincipalFromString(username, kerberosVersion_V5,
-			&kerb_user_id);
-		maj = KLAcquireInitialTickets(kerb_user_id, NULL, NULL, NULL);
-		KLDisposePrincipal(kerb_user_id);
-	}
-#endif
 	tokenout.length = snprintf(prodid, 512, "%s@%s", service, hostname);
 	gssstate = gss_import_name(&min, &tokenout, 
 					(gss_OID)GSS_C_NT_HOSTBASED_SERVICE,
@@ -197,8 +168,10 @@ int do_gssinit(struct ev_loop * loop, gss_buffer_desc * in) {
 		gssstate == GSS_S_COMPLETE)
 		gss_delete_sec_context(&min, &context, NULL);
 	gssstate = gss_init_sec_context(&min, GSS_C_NO_CREDENTIAL,
-					&context, target_name, NULL, 0, 0, NULL,
-					in, NULL, &tokenout, NULL, NULL);
+					&context, target_name, NULL, 0,
+					GSS_C_MUTUAL_FLAG | GSS_C_CONF_FLAG |
+					GSS_C_INTEG_FLAG | GSS_C_REPLAY_FLAG,
+					NULL, in, NULL, &tokenout, NULL, NULL);
 
 	if(gssstate != GSS_S_COMPLETE && gssstate != GSS_S_CONTINUE_NEEDED) {
 		if(context != GSS_C_NO_CONTEXT)
@@ -221,7 +194,7 @@ int do_gssinit(struct ev_loop * loop, gss_buffer_desc * in) {
 
 void netfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	int rc;
-	uint8_t pac;
+	char pac;
 	struct sockaddr_in peer;
 	gss_buffer_desc packet = GSS_C_EMPTY_BUFFER;
 	OM_uint32 min;
@@ -330,6 +303,23 @@ int get_mac() {
 	freeifaddrs(ifp);
 #endif
 	return 0;
+}
+
+void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
+	ev_tstamp now = ev_now(loop);
+	ev_tstamp timeout = last_init_activity + 10;
+	if(timeout < now) {
+		if(gssstate != GSS_S_COMPLETE || init < 1) {
+			logit(1, "Did not receive GSS packet from server. Retrying.");
+			do_gssinit(loop, NULL);
+			ev_timer_again(loop, w);
+		}
+		else
+			ev_timer_stop(loop, w);
+	} else {
+		w->repeat = timeout - now;
+		ev_timer_again(loop, w);	
+	}
 }
 
 int main(int argc, char ** argv) {

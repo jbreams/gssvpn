@@ -21,7 +21,13 @@ AC_CHECK_HEADER([linux/if_packet.h],
 AC_CHECK_HEADER([net/if_dl.h],
 	AC_DEFINE([HAVE_IF_DL_H], [1], [Has if_dl header]), [], [])
 
-AC_SEARCH_LIBS([gss_accept_sec_context], [gssapi gssapi_krb5])
+CPPFLAGS_save="$CPPFLAGS"
+CPPFLAGS="$CPPFLAGS -FKerberos"
+AC_CHECK_HEADER([Kerberos/gssapi.h],
+	AC_DEFINE([HAVE_KERBEROSLOGIN_H], [1], [Has OSX Kerberos]) \
+		LIBS="$LIBS -framework Kerberos",
+	CPPFLAGS="$CPPFLAGS_save"
+	AC_SEARCH_LIBS([gss_accept_sec_context], [gssapi gssapi_krb5]))
 AC_SEARCH_LIBS([gethostbyname], [resolve nsl])
 AC_SEARCH_LIBS([socket], [socket])
 
@@ -35,13 +41,6 @@ AC_CHECK_FUNCS([gss_accept_sec_context gss_init_sec_context \
 	gss_acquire_cred], [], [AC_MSG_ERROR([Missing GSSAPI functions])])
 AC_CHECK_FUNCS([ioctl setsockopt bind recvfrom sendto socket])
 AC_CHECK_FUNCS(memcmp memcpy memmove memset)
-
-CPPFLAGS_save="$CPPFLAGS"
-CPPFLAGS="$CPPFLAGS -FKerberos"
-AC_CHECK_HEADER([Kerberos/KerberosLogin.h],
-	AC_DEFINE([HAVE_KERBEROSLOGIN_H], [1], [Has OSX Kerberos]) \
-		LIBS="$LIBS -framework Kerberos",
-	CPPFLAGS="$CPPFLAGS_save")
 
 m4_include([libev/libev.m4])
 
