@@ -152,12 +152,13 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 int do_gssinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	gss_name_t target_name;
 	char prodid[512];
-	gss_buffer_desc tokenout = { 512, &prodid };
+	gss_buffer_desc tokenout = { sizeof(prodid), &prodid };
 	OM_uint32 min;
 
 	ev_io_stop(loop, &tapio);
 
-	tokenout.length = snprintf(prodid, 512, "%s@%s", service, hostname);
+	tokenout.length = snprintf(prodid, sizeof(prodid), "%s@%s",
+		service, hostname);
 	gss_import_name(&min, &tokenout, (gss_OID)GSS_C_NT_HOSTBASED_SERVICE,
 		&target_name);
 	tokenout.value = NULL;
