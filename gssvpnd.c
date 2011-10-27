@@ -338,9 +338,14 @@ void handle_gssinit(struct ev_loop * loop, struct conn * client,
 		return;
 	}
 	client->gssstate = maj;
-	if(maj == GSS_S_CONTINUE_NEEDED) {
+	if(output.length > 0) {
 		send_packet(netfd, &output, &client->addr,
 			PAC_GSSINIT, client->sid);
+		gss_release_buffer(&lmin, &output);
+	}
+
+	if(maj == GSS_S_CONTINUE_NEEDED) {
+		logit(0, "Continue needed for GSSAPI auth");
 		return;
 	}
 

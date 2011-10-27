@@ -222,12 +222,13 @@ int recv_packet(int s, gss_buffer_desc * out,
 			return -1;
 		}
 	}
-	logit(-1, "Received %d bytes from remote host", r);
 
 	memcpy(&ph, pbuff, sizeof(ph));	
 	ph.sid = ntohs(ph.sid);
 	*pacout = ph.pac;
 	*sid = ph.sid;
+
+	logit(-1, "Received %d bytes from remote host - pac %d", r, ph.pac);
 
 	if(r == sizeof(ph) || !out)
 		return 0;
