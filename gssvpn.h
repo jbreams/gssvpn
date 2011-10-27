@@ -31,7 +31,7 @@ struct conn {
 	gss_ctx_id_t context;
 	unsigned long gssstate;
 	struct sockaddr_in addr;
-	char ipstr[20];
+	char ipstr[INET6_ADDRSTRLEN];
 	char * princname;
 	unsigned char mac[6];
 	struct conn * ipnext;

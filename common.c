@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #if defined(HAVE_IF_TUN)
 #include <linux/if_tun.h>
 #endif
@@ -234,7 +235,8 @@ int recv_packet(int s, gss_buffer_desc * out,
 	rc = lzo1x_decompress_safe(pbuff + sizeof(ph), r - sizeof(ph),
 		crypted.value, &crypted.length, lzowrk);
 	if(rc != 0) {
-		logit(1, "Error decompressing packet %d", rc);
+		logit(1, "Error decompressing packet %d from %s:%d (%d bytes %d pac)",
+			rc, inet_ntoa(peer->sin_addr), peer->sin_port, r- sizeof(ph), ph.pac);
 		return -1;
 	}
 
