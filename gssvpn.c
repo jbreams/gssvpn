@@ -158,14 +158,12 @@ int do_gssinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	ev_io_stop(loop, &tapio);
 
 	tokenout.length = snprintf(prodid, 512, "%s@%s", service, hostname);
-	gssstate = gss_import_name(&min, &tokenout, 
-					(gss_OID)GSS_C_NT_HOSTBASED_SERVICE,
-					&target_name);
+	gss_import_name(&min, &tokenout, (gss_OID)GSS_C_NT_HOSTBASED_SERVICE,
+		&target_name);
 	tokenout.value = NULL;
 	tokenout.length = 0;
 
-	if(context != GSS_C_NO_CONTEXT &&
-		gssstate == GSS_S_COMPLETE)
+	if(context != GSS_C_NO_CONTEXT && gssstate == GSS_S_COMPLETE)
 		gss_delete_sec_context(&min, &context, NULL);
 	gssstate = gss_init_sec_context(&min, GSS_C_NO_CREDENTIAL,
 					&context, target_name, NULL,
