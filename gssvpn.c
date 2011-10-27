@@ -168,9 +168,10 @@ int do_gssinit(struct ev_loop * loop, gss_buffer_desc * in) {
 		gssstate == GSS_S_COMPLETE)
 		gss_delete_sec_context(&min, &context, NULL);
 	gssstate = gss_init_sec_context(&min, GSS_C_NO_CREDENTIAL,
-					&context, target_name, NULL, 0,
-					GSS_C_MUTUAL_FLAG | GSS_C_CONF_FLAG | GSS_C_INTEG_FLAG,
-					NULL, in, NULL, &tokenout, NULL, NULL);
+					&context, target_name, NULL,
+					GSS_C_CONF_FLAG | GSS_C_INTEG_FLAG,
+					GSS_C_INDEFINITE, NULL, in, NULL, &tokenout,
+					NULL, NULL);
 
 	if(gssstate != GSS_S_COMPLETE && gssstate != GSS_S_CONTINUE_NEEDED) {
 		if(context != GSS_C_NO_CONTEXT)

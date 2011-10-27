@@ -181,7 +181,7 @@ void netinit_child_cb(struct ev_loop * loop, ev_child * ioc, int revents) {
 
 void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	uint8_t framebuf[1550], dstmac[6];
-	ssize_t size = read(ios->fd, framebuf, 1550);
+	ssize_t size = read(ios->fd, framebuf, sizeof(framebuf));
 	gss_buffer_desc plaintext = { size, framebuf }; 
 	int rc;
 	OM_uint32 lmin;
@@ -189,8 +189,8 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 	if(size < 0 && errno == EAGAIN)
 		return;
 
-	memcpy(dstmac, framebuf, 6);
-	if(memcmp(dstmac, &ether_broadcast, 6) == 0) {
+	memcpy(dstmac, framebuf, sizeof(dstmac));
+	if(memcmp(dstmac, &ether_broadcast, sizeof(dstmac)) == 0) {
 		uint8_t i;
 		for(i = 0; i < 255; i++) {
 			struct conn * cur = clients_ether[i];
@@ -217,17 +217,12 @@ void tapfd_read_cb(struct ev_loop * loop, ev_io * ios, int revents) {
 		}
 		return;
 	}
-	uint8_t eh = hash(dstmac, 6);
+	uint8_t eh = hash(dstmac, sizeof(dstmac));
 	struct conn * client = clients_ether[eh];
-	while(client && memcmp(client->mac, dstmac, 6) != 0)
+	while(client && memcmp(client->mac, dstmac, sizeof(dstmac)) != 0)
 		client = client->ethernext;
 	if(!client) {
 		logit(-1, "Received packet for unknown client");
-		return;
-	}
-	if(client->context == GSS_C_NO_CONTEXT ||
-		client->gssstate == GSS_S_CONTINUE_NEEDED) {
-		logit(-1, "Dropping packet for tap");
 		return;
 	}
 
@@ -248,7 +243,6 @@ void handle_netinit(struct ev_loop * loop, struct conn * client,
 	gss_buffer_desc * macbuf) {
 	pid_t pid;
 	int fds[2];
-	uint8_t * mac = macbuf->value;
 
 	if(ev_is_active(&client->nichild))
 		return;
@@ -258,8 +252,8 @@ void handle_netinit(struct ev_loop * loop, struct conn * client,
 
 	if(memcmp(mac, client->mac, sizeof(client->mac)) != 0) {
 		uint8_t eh;
-		memcpy(client->mac, mac, sizeof(client->mac));
-		eh = hash(mac, sizeof(mac));
+		memcpy(client->mac, macbuf->value, sizeof(client->mac));
+		eh = hash(macbuf->vaue, macbuf->length);
 		unlink_conn(client, CLIENT_ETHERNET);
 		client->ethernext = clients_ether[eh];
 		clients_ether[eh] = client;

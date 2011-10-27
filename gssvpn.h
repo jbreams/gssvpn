@@ -33,7 +33,7 @@ struct conn {
 	struct sockaddr_in addr;
 	char ipstr[INET6_ADDRSTRLEN];
 	char * princname;
-	unsigned char mac[6];
+	uint8_t mac[6];
 	struct conn * ipnext;
 	struct conn * ethernext;
 	ev_child nichild;
