@@ -250,10 +250,10 @@ void handle_netinit(struct ev_loop * loop, struct conn * client,
 	if(macbuf->length < sizeof(client->mac))
 		return;
 
-	if(memcmp(mac, client->mac, sizeof(client->mac)) != 0) {
+	if(memcmp(macbuf->value, client->mac, sizeof(client->mac)) != 0) {
 		uint8_t eh;
 		memcpy(client->mac, macbuf->value, sizeof(client->mac));
-		eh = hash(macbuf->vaue, macbuf->length);
+		eh = hash(client->mac, sizeof(client->mac));
 		unlink_conn(client, CLIENT_ETHERNET);
 		client->ethernext = clients_ether[eh];
 		clients_ether[eh] = client;
@@ -505,11 +505,10 @@ int main(int argc, char ** argv) {
 			return -1;
 	}
 
-	netfd = open_net(port);
-	if(netfd < 0)
+	if((netfd = open_net(port)) < 0)
 		return -1;
 
-	if(open_tap(&tapdev))
+	if((tapfd = open_tap(&tapdev)) < 0)
 		logit(1, "No tap device defined");
 
 	if(dropto)
