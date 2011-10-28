@@ -321,12 +321,24 @@ void init_retry_cb(struct ev_loop * loop, ev_timer * w, int revents) {
 	}
 }
 
+void gssinit_sig_cb(struct ev_loop * loop, ev_signal * s, int revents) {
+	logit(0, "Caught signal to reinitialize GSSAPI");
+	do_gssinit(loop, NULL);
+}
+
+void netinit_sig_cb(struct ev_loop * loop, ev_signal * s, int revents) {
+	gss_buffer_desc macout = { sizeof(mac), mac };
+	logit(0, "Caugh signal to reinitialize network");
+	send_packet(netfd, &macout, &server, PAC_NETINIT, sessionid);
+}
+
 int main(int argc, char ** argv) {
 	struct ev_loop * loop;
 	char ch;
 	short port = 0;
 	struct hostent * hostinfo;
 	OM_uint32 min;
+	ev_signal gsssig, netsig;
 
 	memset(&server, 0, sizeof(struct sockaddr_in));
 	
@@ -406,6 +418,7 @@ int main(int argc, char ** argv) {
 	ev_io_start(loop, &tapio);
 	ev_signal_init(&term, term_cb, SIGTERM|SIGQUIT);
 	ev_signal_start(loop, &term);
+	ev_signal_init(&gsssig, gssinit_sig_cb, SIGUSR1);
 
 	if(do_gssinit(loop, NULL) < 0) {
 		close(tapfd);
@@ -416,6 +429,10 @@ int main(int argc, char ** argv) {
 	ev_init(&init_retry, init_retry_cb);
 	last_init_activity = ev_now(loop);
 	init_retry_cb(loop, &init_retry, EV_TIMER);
+	ev_signal_start(loop, &gsssig);
+	ev_signal_init(&netsig, netinit_sig_cb, SIGUSR2);
+	ev_signal_start(loop, &netsig);
+
 
 	ev_run(loop, 0);
 	if(netinit_util) {
