@@ -20,6 +20,7 @@ my $tapdev = shift;
 my $action = shift;
 my @routenets = my @routehosts = ( );
 
+$ENV{PATH} = "/sbin";
 $action =~ /shutdown/ && exit 0;
 
 while (@ARGV) {
@@ -49,23 +50,23 @@ if(!$dhcp) {
 	if(!$ipaddr || !$subnet) {
 		exit 1;
 	}
-	system "ifconfig $tapdev inet $ipaddr netmask $subnet";
+	system "/sbin/ifconfig $tapdev inet $ipaddr netmask $subnet";
 }
 
 if(!$gateway) {
 	exit 0;
 }
 
-system "ping -o -q -n $gateway";
+system "/sbin/ping -o -q -n $gateway";
 if($? != 0) {
 	die "Unable to ping gateway.";
 }
 
 foreach my $dest (@routenets) {
-	system "route add -net $dest $gateway";
+	system "/sbin/route add -net $dest $gateway";
 }
 
 foreach my $dest (@routehosts) {
-	system "route add -host $dest $gateway";
+	system "/sbin/route add -host $dest $gateway";
 }
 

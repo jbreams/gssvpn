@@ -47,11 +47,13 @@ gss_ctx_id_t context = GSS_C_NO_CONTEXT;
 OM_uint32 gssstate = GSS_S_CONTINUE_NEEDED;
 int tapfd, netfd, verbose = 0, init = 0;
 struct sockaddr_in server;
-char * tapdev, *service, *hostname, *netinit_util = NULL;
+char *tapdev, *service, *hostname;
+char *netinit_util = NULL, *renewcmd = NULL;
 ev_child netinit_child;
 ev_timer init_retry, keepalive_timer;
 ev_signal term;
 ev_io tapio, netio;
+ev_periodic renew_timer;
 int daemonize = 0, keepalive = 30;
 ev_tstamp last_init_activity, last_keepalive = 0;
 char * username = NULL;
@@ -149,11 +151,17 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	return 0;
 }
 
+void renew_cb(struct ev_loop * loop, ev_periodic *w, int revents) {
+	ev_periodic_stop(loop, w);
+	logit(1, "Calling %s to renew credentials", renewcmd);
+	system(renewcmd);
+}
+
 int do_gssinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	gss_name_t target_name;
 	char prodid[512];
 	gss_buffer_desc tokenout = { sizeof(prodid), &prodid };
-	OM_uint32 min;
+	OM_uint32 min, ctx_timeout;
 
 	ev_io_stop(loop, &tapio);
 
@@ -167,10 +175,10 @@ int do_gssinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	if(context != GSS_C_NO_CONTEXT && gssstate == GSS_S_COMPLETE)
 		gss_delete_sec_context(&min, &context, NULL);
 	gssstate = gss_init_sec_context(&min, GSS_C_NO_CREDENTIAL,
-					&context, target_name, NULL,
-					GSS_C_CONF_FLAG | GSS_C_INTEG_FLAG | GSS_C_MUTUAL_FLAG,
-					GSS_C_INDEFINITE, NULL, in, NULL, &tokenout,
-					NULL, NULL);
+				&context, target_name, NULL,
+				GSS_C_CONF_FLAG | GSS_C_INTEG_FLAG | GSS_C_MUTUAL_FLAG,
+				GSS_C_INDEFINITE, NULL, in, NULL, &tokenout,
+				NULL, &ctx_timeout);
 
 	if(gssstate != GSS_S_COMPLETE && gssstate != GSS_S_CONTINUE_NEEDED) {
 		if(context != GSS_C_NO_CONTEXT)
@@ -182,11 +190,22 @@ int do_gssinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	gss_release_name(&min, &target_name);
 	if(tokenout.length) {
 		int rc;
-		rc = send_packet(netfd, &tokenout, &server, PAC_GSSINIT, sessionid);
+		rc = send_packet(netfd, &tokenout, &server,
+			PAC_GSSINIT, sessionid);
 		gss_release_buffer(&min, &tokenout);
 		if(rc < 0)
 			return -1;
 	}
+
+	if(gssstate == GSS_S_CONTINUE_NEEDED)
+		return 0;
+
+	if(ctx_timeout > 2 && renewcmd) {
+		ev_periodic_init(&renew_timer, renew_cb,
+			ctx_timeout - 1, 0, NULL);
+		ev_periodic_start(loop, &renew_timer);
+	}
+
 	ev_io_start(loop, &tapio);
 	return 0;
 }
@@ -342,7 +361,7 @@ int main(int argc, char ** argv) {
 
 	memset(&server, 0, sizeof(struct sockaddr_in));
 	
-	while((ch = getopt(argc, argv, "vh:p:s:i:a:u:e:")) != -1) {
+	while((ch = getopt(argc, argv, "vh:p:s:i:a:u:e:r:")) != -1) {
 		switch(ch) {
 			case 'v':
 				verbose = 1;
@@ -371,8 +390,8 @@ int main(int argc, char ** argv) {
 			case 'e':
 				keepalive = atoi(optarg);
 				break;
-			case 'u':
-				username = strdup(optarg);
+			case 'r':
+				renewcmd = strdup(optarg);
 				break;
 		}
 	}
