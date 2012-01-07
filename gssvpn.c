@@ -53,7 +53,6 @@ ev_child netinit_child;
 ev_timer init_retry, keepalive_timer;
 ev_signal term;
 ev_io tapio, netio;
-ev_periodic renew_timer;
 int daemonize = 0, keepalive = 30;
 ev_tstamp last_init_activity, last_keepalive = 0;
 char * username = NULL;
@@ -151,19 +150,19 @@ int do_netinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	return 0;
 }
 
-void renew_cb(struct ev_loop * loop, ev_periodic *w, int revents) {
-	ev_periodic_stop(loop, w);
-	logit(1, "Calling %s to renew credentials", renewcmd);
-	system(renewcmd);
-}
-
 int do_gssinit(struct ev_loop * loop, gss_buffer_desc * in) {
 	gss_name_t target_name;
 	char prodid[512];
 	gss_buffer_desc tokenout = { sizeof(prodid), &prodid };
 	OM_uint32 min, ctx_timeout;
+	int rc;
 
 	ev_io_stop(loop, &tapio);
+
+	if(renewcmd && (rc = system(renewcmd)) != 0) {
+		logit(1, "Getting new credentials failed with code %d", rc);
+		return -1;
+	}
 
 	tokenout.length = snprintf(prodid, sizeof(prodid), "%s@%s",
 		service, hostname);
@@ -199,12 +198,6 @@ int do_gssinit(struct ev_loop * loop, gss_buffer_desc * in) {
 
 	if(gssstate == GSS_S_CONTINUE_NEEDED)
 		return 0;
-
-	if(ctx_timeout > 2 && renewcmd) {
-		ev_periodic_init(&renew_timer, renew_cb,
-			ctx_timeout - 1, 0, NULL);
-		ev_periodic_start(loop, &renew_timer);
-	}
 
 	ev_io_start(loop, &tapio);
 	return 0;
