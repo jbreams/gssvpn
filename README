@@ -1,4 +1,4 @@
-GSSVPN v1.3
+GSSVPN v1.4
 
 GSSVPN is simple VPN software that uses GSSAPI to do its encryption and
 authentication. It assumes that your server will have a service principal
@@ -37,7 +37,7 @@ gssvpnd -v -p port -i interface -s service -a utility -u user -t -d
 	-i interface	Tap interface to use
 	-d				Runs the process as a daemon, detaching from the console.
 
-gssvpn -v -h hostname -p port -s service -i interface -e keepalive
+gssvpn -v -h hostname -p port -s service -i interface -e keepalive -r cmd
 	-v				Will enable verbose logging.
 	-p port			Port to connect to on the server
 	-s service		Service name to connect to on server

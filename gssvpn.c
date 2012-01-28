@@ -445,7 +445,6 @@ int main(int argc, char ** argv) {
 	ev_signal_init(&netsig, netinit_sig_cb, SIGUSR2);
 	ev_signal_start(loop, &netsig);
 
-
 	ev_run(loop, 0);
 	if(netinit_util) {
 		pid_t pid;
