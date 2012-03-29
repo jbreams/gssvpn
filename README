@@ -27,22 +27,24 @@ your own netinit scripts to fit your needs.
 
 Usage:
 
-gssvpnd -v -p port -i interface -s service -a utility -u user -t -d
+gssvpnd -v -p port -s service -i interface -a utility -u user -t -d
 	-v				Will enable verbose logging. Really really verbose.
 	-p port			The port for the server to bind to.
 	-s service		The name of the service in the keytab to accept contexts for.
+	-i interface	Tap interface to use
 	-a utility		Path to the utility to execute for network initialization.
 	-u user			User to become after dropping privileges.
 	-t 				Kill clients on timeout (default is to reinitialize).
-	-i interface	Tap interface to use
 	-d				Runs the process as a daemon, detaching from the console.
 
-gssvpn -v -h hostname -p port -s service -i interface -e keepalive -r cmd
+gssvpn -v -h hostname -p port -s service -i interface -a utility -u user -e keepalive -r cmd
 	-v				Will enable verbose logging.
+	-h hostname 	Hostname of server
 	-p port			Port to connect to on the server
 	-s service		Service name to connect to on server
-	-h hostname 	Hostname of server
 	-i interface	Tap interface to use
+	-a utility		Path to the utility to execute for network initialization.
+	-u user			User to become after dropping privileges.
 	-e keepalive	Period between sending keep-alive echos to server.
 	-r command		Command to run to renew credentials.
 
