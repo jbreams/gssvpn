@@ -1,0 +1,23 @@
+# Compiled Object files
+*.o
+.deps
+
+# Backups
+*~
+
+# Generated files
+/Makefile
+/Makefile.in
+/aclocal.m4
+/autom4te.cache/
+/config.h
+/config.h.in
+/config.log
+/config.status
+/configure
+/depcomp
+/gssvpn
+/gssvpnd
+/install-sh
+/missing
+/stamp-h1
